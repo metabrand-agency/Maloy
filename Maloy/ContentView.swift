@@ -55,7 +55,7 @@ final class AudioManager: NSObject, ObservableObject {
         }
     }
 
-    // MARK: Слушание (tap в родном формате + конвертация в 16kHz/mono Int16)
+    // MARK: Слушание (запись в родном формате микрофона)
     func startListening() {
         guard !isSpeaking else { return }
         recognizedText = ""
@@ -75,66 +75,32 @@ final class AudioManager: NSObject, ObservableObject {
         audioEngine = engine
         let input = engine.inputNode
 
-        // Родной формат микрофона (важно: inputFormat, а не outputFormat)
-        let inputFormat = input.inputFormat(forBus: 0)
+        // Используем родной формат микрофона - Whisper отлично его понимает
+        let recordingFormat = input.outputFormat(forBus: 0)
 
-        // Целевой формат для Whisper
-        let desiredFormat = AVAudioFormat(commonFormat: .pcmFormatInt16,
-                                          sampleRate: 16_000,
-                                          channels: 1,
-                                          interleaved: true)!
-        guard let converter = AVAudioConverter(from: inputFormat, to: desiredFormat) else {
-            print("⚠️ Не удалось создать AVAudioConverter"); return
-        }
+        print("🎤 Recording format: \(recordingFormat.sampleRate)Hz, \(recordingFormat.channelCount) channels")
 
         do {
-            audioFile = try AVAudioFile(forWriting: audioFilename, settings: desiredFormat.settings)
+            audioFile = try AVAudioFile(forWriting: audioFilename,
+                                        settings: recordingFormat.settings,
+                                        commonFormat: .pcmFormatFloat32,
+                                        interleaved: false)
         } catch {
             print("Audio file error:", error)
             return
         }
 
-        // На всякий случай — чистим прежний tap
+        // Чистим прежний tap
         input.removeTap(onBus: 0)
 
-        // Tap ставим с format: nil (пусть система отдаёт родной формат)
-        input.installTap(onBus: 0, bufferSize: 1024, format: nil) { buffer, _ in
-            guard let converted = AVAudioPCMBuffer(pcmFormat: desiredFormat,
-                                                   frameCapacity: AVAudioFrameCount(1024)) else { return }
+        // Записываем в родном формате без конвертации
+        input.installTap(onBus: 0, bufferSize: 4096, format: recordingFormat) { buffer, _ in
+            // Детектируем речь для определения тишины
+            self.detectSpeech(buffer: buffer)
 
-            var error: NSError?
-            converter.convert(to: converted, error: &error) { _, outStatus in
-                outStatus.pointee = .haveData
-                return buffer
-            }
-            if let e = error {
-                print("Conversion error:", e)
-                return
-            }
-
-            // ✅ Преобразуем в Float32 (чтобы точно записывалось без падений)
-            guard let floatFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32,
-                                                  sampleRate: converted.format.sampleRate,
-                                                  channels: converted.format.channelCount,
-                                                  interleaved: false),
-                  let floatBuffer = AVAudioPCMBuffer(pcmFormat: floatFormat,
-                                                     frameCapacity: converted.frameCapacity)
-            else { return }
-
-            floatBuffer.frameLength = converted.frameLength
-            for c in 0..<Int(converted.format.channelCount) {
-                let src = converted.int16ChannelData![c]
-                let dst = floatBuffer.floatChannelData![c]
-                let count = Int(converted.frameLength)
-                for i in 0..<count {
-                    dst[i] = Float(src[i]) / Float(Int16.max)
-                }
-            }
-
-            self.detectSpeech(buffer: floatBuffer)
-
+            // Записываем буфер как есть
             do {
-                try self.audioFile?.write(from: floatBuffer)
+                try self.audioFile?.write(from: buffer)
             } catch {
                 print("⚠️ File write error:", error)
             }
@@ -148,7 +114,7 @@ final class AudioManager: NSObject, ObservableObject {
         }
 
         startSilenceTimer()
-        print("🎧 Listening started (mono 16kHz)")
+        print("🎧 Listening started in native format")
     }
 
     // Остановка слушания (дергается таймером тишины)
