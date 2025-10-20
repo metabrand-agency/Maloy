@@ -76,39 +76,31 @@ final class AudioManager: NSObject, ObservableObject {
         audioEngine = engine
         let input = engine.inputNode
 
-        // Получаем формат микрофона устройства
-        let inputFormat = input.inputFormat(forBus: 0)
-
-        print("🎤 Input format: \(inputFormat.sampleRate)Hz, \(inputFormat.channelCount) channels")
-
-        // Создаем стандартный формат для записи (совместимо с любым устройством)
-        guard let recordingFormat = AVAudioFormat(
-            commonFormat: .pcmFormatFloat32,
-            sampleRate: inputFormat.sampleRate,
-            channels: AVAudioChannelCount(1),
-            interleaved: false
-        ) else {
-            print("⚠️ Failed to create recording format")
-            return
-        }
-
-        do {
-            audioFile = try AVAudioFile(forWriting: audioFilename,
-                                        settings: recordingFormat.settings)
-        } catch {
-            print("Audio file error:", error)
-            return
-        }
-
         // Чистим прежний tap
         input.removeTap(onBus: 0)
 
-        // Tap напрямую в моно формат (без сложной конвертации)
-        input.installTap(onBus: 0, bufferSize: 4096, format: recordingFormat) { buffer, _ in
+        // Получаем формат микрофона (может быть любой - встроенный, наушники, bluetooth)
+        let inputFormat = input.outputFormat(forBus: 0)
+
+        print("🎤 Recording format: \(inputFormat.sampleRate)Hz, \(inputFormat.channelCount) ch")
+
+        // Используем родной формат для tap (без конвертации)
+        do {
+            audioFile = try AVAudioFile(forWriting: audioFilename,
+                                        settings: inputFormat.settings,
+                                        commonFormat: .pcmFormatFloat32,
+                                        interleaved: false)
+        } catch {
+            print("⚠️ Audio file error:", error)
+            return
+        }
+
+        // Tap в родном формате устройства (универсально работает везде)
+        input.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { buffer, _ in
             // Детектируем речь для определения тишины
             self.detectSpeech(buffer: buffer)
 
-            // Записываем буфер
+            // Записываем буфер как есть
             do {
                 try self.audioFile?.write(from: buffer)
             } catch {
