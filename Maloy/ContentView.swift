@@ -184,6 +184,16 @@ final class AudioManager: NSObject, ObservableObject {
         body.append("Content-Disposition: form-data; name=\"language\"\r\n\r\n".data(using: .utf8)!)
         body.append("ru\r\n".data(using: .utf8)!)
 
+        // prompt — подсказка для контекста (уменьшает галлюцинации)
+        body.append("--\(boundary)\r\n".data(using: .utf8)!)
+        body.append("Content-Disposition: form-data; name=\"prompt\"\r\n\r\n".data(using: .utf8)!)
+        body.append("Разговор ребенка с голосовым помощником. Вопросы про учебу, космос, игры.\r\n".data(using: .utf8)!)
+
+        // temperature — точность распознавания (0 = максимально точно)
+        body.append("--\(boundary)\r\n".data(using: .utf8)!)
+        body.append("Content-Disposition: form-data; name=\"temperature\"\r\n\r\n".data(using: .utf8)!)
+        body.append("0.0\r\n".data(using: .utf8)!)
+
         body.append("--\(boundary)--\r\n".data(using: .utf8)!)
         req.httpBody = body
 
