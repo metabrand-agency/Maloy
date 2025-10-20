@@ -127,7 +127,7 @@ final class AudioManager: NSObject, ObservableObject {
         transcribeAudio()
     }
 
-    // MARK: Детектор речи (простая RMS-оценка)
+    // MARK: Детектор речи (улучшенная RMS-оценка для шумных условий)
     private func detectSpeech(buffer: AVAudioPCMBuffer) {
         guard !isProcessing, let channel = buffer.floatChannelData?[0] else { return }
         let count = Int(buffer.frameLength)
@@ -135,13 +135,18 @@ final class AudioManager: NSObject, ObservableObject {
         let mean = frame.map { $0 * $0 }.reduce(0, +) / Float(max(count, 1))
         let rms = sqrt(mean)
         let avgPower = 20 * log10(max(rms, 1e-7)) // защита от -inf
-        if avgPower > -45 { lastSpeechTime = Date() }
+
+        // Повышенный порог для игнорирования фонового шума (-35 вместо -45)
+        if avgPower > -35 {
+            lastSpeechTime = Date()
+        }
     }
 
     private func startSilenceTimer() {
         silenceTimer?.invalidate()
-        silenceTimer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { _ in
-            if Date().timeIntervalSince(self.lastSpeechTime) > 2.0 {
+        silenceTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { _ in
+            // Сократили таймаут тишины: 1.2 сек вместо 2.0 сек
+            if Date().timeIntervalSince(self.lastSpeechTime) > 1.2 {
                 self.stopListening()
             }
         }
@@ -253,13 +258,14 @@ final class AudioManager: NSObject, ObservableObject {
         }.resume()
     }
 
-    // MARK: OpenAI TTS
+    // MARK: OpenAI TTS (оптимизировано для быстрого старта)
     func say(_ text: String, completion: (() -> Void)? = nil) {
         guard let url = URL(string: "https://api.openai.com/v1/audio/speech") else { return }
         let json: [String: Any] = [
             "model": "gpt-4o-mini-tts",
             "voice": "alloy", // можно попробовать "verse", "shimmer", "soft"
-            "input": text
+            "input": text,
+            "speed": 1.0 // нормальная скорость
         ]
 
         var req = URLRequest(url: url)
@@ -268,11 +274,32 @@ final class AudioManager: NSObject, ObservableObject {
         req.addValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try? JSONSerialization.data(withJSONObject: json)
 
-        URLSession.shared.dataTask(with: req) { data, _, _ in
-            guard let data = data else { return }
+        print("🎵 Requesting TTS...")
+
+        URLSession.shared.dataTask(with: req) { data, response, error in
+            if let error = error {
+                print("❌ TTS error:", error.localizedDescription)
+                completion?()
+                return
+            }
+
+            guard let data = data, !data.isEmpty else {
+                print("❌ Empty TTS response")
+                completion?()
+                return
+            }
+
             let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("speech.mp3")
-            try? data.write(to: tmp)
-            DispatchQueue.main.async { self.playAudio(from: tmp, completion: completion) }
+            do {
+                try data.write(to: tmp, options: .atomic)
+                print("✅ TTS received (\(data.count / 1024)KB)")
+                DispatchQueue.main.async {
+                    self.playAudio(from: tmp, completion: completion)
+                }
+            } catch {
+                print("❌ TTS write error:", error)
+                completion?()
+            }
         }.resume()
     }
 
@@ -285,10 +312,24 @@ final class AudioManager: NSObject, ObservableObject {
             isSpeaking = true
             let p = try AVAudioPlayer(contentsOf: url)
             player = p
-            p.prepareToPlay()
-            p.play()
 
-            DispatchQueue.main.asyncAfter(deadline: .now() + p.duration + 0.5) {
+            // Подготовка к воспроизведению (загружает в память)
+            p.prepareToPlay()
+
+            // Немедленное воспроизведение
+            let success = p.play()
+
+            if !success {
+                print("⚠️ Failed to start audio playback")
+                self.isSpeaking = false
+                completion?()
+                return
+            }
+
+            print("🔊 Playing audio (\(String(format: "%.1f", p.duration))s)")
+
+            // Используем более точный таймер завершения
+            DispatchQueue.main.asyncAfter(deadline: .now() + p.duration + 0.3) {
                 self.isSpeaking = false
                 completion?()
             }
