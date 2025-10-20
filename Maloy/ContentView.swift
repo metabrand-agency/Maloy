@@ -129,7 +129,7 @@ final class AudioManager: NSObject, ObservableObject {
         transcribeAudio()
     }
 
-    // MARK: Детектор речи (сбалансированный для нормального использования)
+    // MARK: Детектор речи (настроен для полных предложений)
     private func detectSpeech(buffer: AVAudioPCMBuffer) {
         guard !isProcessing, let channel = buffer.floatChannelData?[0] else { return }
         let count = Int(buffer.frameLength)
@@ -138,19 +138,19 @@ final class AudioManager: NSObject, ObservableObject {
         let rms = sqrt(mean)
         let avgPower = 20 * log10(max(rms, 1e-7)) // защита от -inf
 
-        // Балансированный порог: -40dB (между старым -45 и -35)
-        // Достаточно чувствителен для речи, но игнорирует тихий фоновый шум
-        if avgPower > -40 {
+        // Чувствительный порог для надежной детекции речи
+        // -45dB ловит нормальную речь, но не очень громкую музыку
+        if avgPower > -45 {
             lastSpeechTime = Date()
         }
     }
 
     private func startSilenceTimer() {
         silenceTimer?.invalidate()
-        silenceTimer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: true) { _ in
-            // Оптимизированный таймаут для естественного диалога: 1.3 сек
-            // Достаточно для пауз между словами, но не слишком долго
-            if Date().timeIntervalSince(self.lastSpeechTime) > 1.3 {
+        silenceTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { _ in
+            // Увеличенный таймаут: 2.0 сек - дает время на паузы в речи
+            // Не обрубает предложения на середине
+            if Date().timeIntervalSince(self.lastSpeechTime) > 2.0 {
                 self.stopListening()
             }
         }
