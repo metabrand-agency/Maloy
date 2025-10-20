@@ -76,16 +76,25 @@ final class AudioManager: NSObject, ObservableObject {
         audioEngine = engine
         let input = engine.inputNode
 
-        // Используем родной формат микрофона - Whisper отлично его понимает
-        let recordingFormat = input.outputFormat(forBus: 0)
+        // Получаем формат микрофона устройства
+        let inputFormat = input.inputFormat(forBus: 0)
 
-        print("🎤 Recording format: \(recordingFormat.sampleRate)Hz, \(recordingFormat.channelCount) channels")
+        print("🎤 Input format: \(inputFormat.sampleRate)Hz, \(inputFormat.channelCount) channels")
+
+        // Создаем стандартный формат для записи (совместимо с любым устройством)
+        guard let recordingFormat = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: inputFormat.sampleRate,
+            channels: AVAudioChannelCount(1),
+            interleaved: false
+        ) else {
+            print("⚠️ Failed to create recording format")
+            return
+        }
 
         do {
             audioFile = try AVAudioFile(forWriting: audioFilename,
-                                        settings: recordingFormat.settings,
-                                        commonFormat: .pcmFormatFloat32,
-                                        interleaved: false)
+                                        settings: recordingFormat.settings)
         } catch {
             print("Audio file error:", error)
             return
@@ -94,14 +103,44 @@ final class AudioManager: NSObject, ObservableObject {
         // Чистим прежний tap
         input.removeTap(onBus: 0)
 
-        // Записываем в родном формате без конвертации
-        input.installTap(onBus: 0, bufferSize: 4096, format: recordingFormat) { buffer, _ in
-            // Детектируем речь для определения тишины
-            self.detectSpeech(buffer: buffer)
+        // Tap с конвертацией в mono если нужно
+        input.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { buffer, _ in
+            // Конвертируем в моно формат если исходник не моно
+            let monoBuffer: AVAudioPCMBuffer
 
-            // Записываем буфер как есть
+            if inputFormat.channelCount == 1 {
+                monoBuffer = buffer
+            } else {
+                // Конвертируем стерео в моно
+                guard let converter = AVAudioConverter(from: inputFormat, to: recordingFormat),
+                      let convertedBuffer = AVAudioPCMBuffer(
+                        pcmFormat: recordingFormat,
+                        frameCapacity: buffer.frameCapacity
+                      ) else {
+                    print("⚠️ Converter creation failed")
+                    return
+                }
+
+                var error: NSError?
+                converter.convert(to: convertedBuffer, error: &error) { _, outStatus in
+                    outStatus.pointee = .haveData
+                    return buffer
+                }
+
+                if let e = error {
+                    print("⚠️ Conversion error:", e)
+                    return
+                }
+
+                monoBuffer = convertedBuffer
+            }
+
+            // Детектируем речь для определения тишины
+            self.detectSpeech(buffer: monoBuffer)
+
+            // Записываем буфер
             do {
-                try self.audioFile?.write(from: buffer)
+                try self.audioFile?.write(from: monoBuffer)
             } catch {
                 print("⚠️ File write error:", error)
             }
