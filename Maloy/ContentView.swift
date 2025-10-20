@@ -45,6 +45,7 @@ final class AudioManager: NSObject, ObservableObject {
     private var player: AVAudioPlayer?
     private var isProcessing = false
     private var isSpeaking = false
+    private var lastRecognizedText = "" // Для предотвращения повторов
 
     // MARK: Старт диалога
     func startConversation() {
@@ -127,7 +128,7 @@ final class AudioManager: NSObject, ObservableObject {
         transcribeAudio()
     }
 
-    // MARK: Детектор речи (улучшенная RMS-оценка для шумных условий)
+    // MARK: Детектор речи (сбалансированный для нормального использования)
     private func detectSpeech(buffer: AVAudioPCMBuffer) {
         guard !isProcessing, let channel = buffer.floatChannelData?[0] else { return }
         let count = Int(buffer.frameLength)
@@ -136,8 +137,9 @@ final class AudioManager: NSObject, ObservableObject {
         let rms = sqrt(mean)
         let avgPower = 20 * log10(max(rms, 1e-7)) // защита от -inf
 
-        // Повышенный порог для игнорирования фонового шума (-35 вместо -45)
-        if avgPower > -35 {
+        // Балансированный порог: -40dB (между старым -45 и -35)
+        // Достаточно чувствителен для речи, но игнорирует тихий фоновый шум
+        if avgPower > -40 {
             lastSpeechTime = Date()
         }
     }
@@ -145,8 +147,8 @@ final class AudioManager: NSObject, ObservableObject {
     private func startSilenceTimer() {
         silenceTimer?.invalidate()
         silenceTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { _ in
-            // Сократили таймаут тишины: 1.2 сек вместо 2.0 сек
-            if Date().timeIntervalSince(self.lastSpeechTime) > 1.2 {
+            // Оптимальный таймаут: 1.5 сек (золотая середина)
+            if Date().timeIntervalSince(self.lastSpeechTime) > 1.5 {
                 self.stopListening()
             }
         }
@@ -187,14 +189,42 @@ final class AudioManager: NSObject, ObservableObject {
             guard let data = data,
                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let text = json["text"] as? String else {
+                print("⚠️ Whisper error or no response")
+                DispatchQueue.main.async {
+                    self.isProcessing = false
+                    // Небольшая пауза перед повторным слушанием при ошибке
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                        self.startListening()
+                    }
+                }
+                return
+            }
+
+            let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+
+            // Если ничего не распознано или слишком короткое - просто продолжаем слушать
+            if trimmedText.isEmpty || trimmedText.count < 2 {
+                print("🤷 Пусто или слишком короткое, продолжаем слушать")
                 DispatchQueue.main.async {
                     self.isProcessing = false
                     self.startListening()
                 }
                 return
             }
+
+            // Защита от повторения того же самого (эхо или зацикливание)
+            if trimmedText == self.lastRecognizedText {
+                print("⚠️ Повтор предыдущего распознавания, игнорируем")
+                DispatchQueue.main.async {
+                    self.isProcessing = false
+                    self.startListening()
+                }
+                return
+            }
+
             DispatchQueue.main.async {
-                self.recognizedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                self.lastRecognizedText = trimmedText
+                self.recognizedText = trimmedText
                 print("🗣️ Распознано:", self.recognizedText)
                 self.askGPT(self.recognizedText)
             }
