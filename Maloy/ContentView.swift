@@ -103,52 +103,14 @@ final class AudioManager: NSObject, ObservableObject {
         // Чистим прежний tap
         input.removeTap(onBus: 0)
 
-        // Tap с конвертацией в mono если нужно
-        input.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { buffer, _ in
-            // Конвертируем в моно формат если исходник не моно
-            let monoBuffer: AVAudioPCMBuffer
-
-            if inputFormat.channelCount == 1 {
-                monoBuffer = buffer
-            } else {
-                // Конвертируем стерео в моно
-                guard let converter = AVAudioConverter(from: inputFormat, to: recordingFormat),
-                      let convertedBuffer = AVAudioPCMBuffer(
-                        pcmFormat: recordingFormat,
-                        frameCapacity: buffer.frameCapacity
-                      ) else {
-                    print("⚠️ Converter creation failed")
-                    return
-                }
-
-                var error: NSError?
-                let inputBlock: AVAudioConverterInputBlock = { inNumPackets, outStatus in
-                    outStatus.pointee = .haveData
-                    return buffer
-                }
-
-                let status = converter.convert(to: convertedBuffer, error: &error, withInputFrom: inputBlock)
-
-                if let e = error {
-                    print("⚠️ Conversion error:", e)
-                    return
-                }
-
-                if status == .error {
-                    print("⚠️ Conversion failed")
-                    return
-                }
-
-                convertedBuffer.frameLength = buffer.frameLength
-                monoBuffer = convertedBuffer
-            }
-
+        // Tap напрямую в моно формат (без сложной конвертации)
+        input.installTap(onBus: 0, bufferSize: 4096, format: recordingFormat) { buffer, _ in
             // Детектируем речь для определения тишины
-            self.detectSpeech(buffer: monoBuffer)
+            self.detectSpeech(buffer: buffer)
 
             // Записываем буфер
             do {
-                try self.audioFile?.write(from: monoBuffer)
+                try self.audioFile?.write(from: buffer)
             } catch {
                 print("⚠️ File write error:", error)
             }
