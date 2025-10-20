@@ -146,9 +146,10 @@ final class AudioManager: NSObject, ObservableObject {
 
     private func startSilenceTimer() {
         silenceTimer?.invalidate()
-        silenceTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { _ in
-            // Оптимальный таймаут: 1.5 сек (золотая середина)
-            if Date().timeIntervalSince(self.lastSpeechTime) > 1.5 {
+        silenceTimer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: true) { _ in
+            // Оптимизированный таймаут для естественного диалога: 1.3 сек
+            // Достаточно для пауз между словами, но не слишком долго
+            if Date().timeIntervalSince(self.lastSpeechTime) > 1.3 {
                 self.stopListening()
             }
         }
@@ -265,21 +266,30 @@ final class AudioManager: NSObject, ObservableObject {
         req.addValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try? JSONSerialization.data(withJSONObject: body)
 
+        print("🤖 Asking GPT...")
+
         URLSession.shared.dataTask(with: req) { data, _, _ in
             guard let data = data,
                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let choices = json["choices"] as? [[String: Any]],
                   let msg = choices.first?["message"] as? [String: Any],
                   let reply = msg["content"] as? String else {
+                print("❌ GPT error")
                 DispatchQueue.main.async {
                     self.isProcessing = false
                     self.startListening()
                 }
                 return
             }
+
+            print("✅ GPT response received")
+
+            // Сразу обновляем UI и запускаем TTS (параллельно, без ожидания)
             DispatchQueue.main.async {
                 self.responseText = reply
                 print("💬 Малой:", reply)
+
+                // TTS начинается НЕМЕДЛЕННО после получения текста
                 self.say(reply) {
                     self.isProcessing = false
                     self.startListening()
