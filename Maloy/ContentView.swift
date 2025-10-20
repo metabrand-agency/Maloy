@@ -122,16 +122,24 @@ final class AudioManager: NSObject, ObservableObject {
                 }
 
                 var error: NSError?
-                converter.convert(to: convertedBuffer, error: &error) { _, outStatus in
+                let inputBlock: AVAudioConverterInputBlock = { inNumPackets, outStatus in
                     outStatus.pointee = .haveData
                     return buffer
                 }
+
+                let status = converter.convert(to: convertedBuffer, error: &error, withInputFrom: inputBlock)
 
                 if let e = error {
                     print("⚠️ Conversion error:", e)
                     return
                 }
 
+                if status == .error {
+                    print("⚠️ Conversion failed")
+                    return
+                }
+
+                convertedBuffer.frameLength = buffer.frameLength
                 monoBuffer = convertedBuffer
             }
 
