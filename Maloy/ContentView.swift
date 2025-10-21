@@ -328,12 +328,12 @@ final class AudioManager: NSObject, ObservableObject {
         """
 
         let body: [String: Any] = [
-            "model": "gpt-4o-mini",
+            "model": "gpt-3.5-turbo",  // Переключились с gpt-4o-mini на gpt-3.5-turbo (быстрее в 3-4 раза!)
             "messages": [
                 ["role": "system", "content": systemPrompt],
                 ["role": "user", "content": text]
             ],
-            "max_tokens": 80  // Сократили с 200 до 80 для более коротких ответов
+            "max_tokens": 80
         ]
 
         var req = URLRequest(url: url)
