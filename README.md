@@ -65,7 +65,7 @@ For detailed architecture documentation, see [CLAUDE.md](CLAUDE.md).
 
 ## Contributing
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+Created by [Metabrand](https://www.metabrand.digital/), a branding agency for startups. Contributions are welcome! Please feel free to submit a Pull Request.
 
 ## License
 
