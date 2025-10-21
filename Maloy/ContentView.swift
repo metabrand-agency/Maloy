@@ -5,6 +5,47 @@ import Combine
 struct ContentView: View {
     @StateObject private var audioManager = AudioManager()
 
+    // Helper функции для кнопки
+    private func getButtonText() -> String {
+        if audioManager.isAutoMode {
+            if audioManager.isProcessing {
+                return "⏳ Обработка..."
+            } else if audioManager.isListening {
+                return "🛑 ПРЕРВАТЬ"
+            } else {
+                return "👂 Слушаю..."
+            }
+        } else {
+            if audioManager.isListening {
+                return "🛑 СТОП"
+            } else if audioManager.isProcessing {
+                return "⏳ Обработка..."
+            } else {
+                return "🎙️ ГОВОРИ"
+            }
+        }
+    }
+
+    private func getButtonColor() -> Color {
+        if audioManager.isAutoMode {
+            if audioManager.isProcessing {
+                return .gray
+            } else if audioManager.isListening {
+                return .red
+            } else {
+                return .green
+            }
+        } else {
+            if audioManager.isListening {
+                return .red
+            } else if audioManager.isProcessing {
+                return .gray
+            } else {
+                return .blue
+            }
+        }
+    }
+
     var body: some View {
         VStack(spacing: 30) {
             Text(audioManager.statusText)
@@ -26,23 +67,47 @@ struct ContentView: View {
 
             Spacer()
 
-            // Большая кнопка - можно остановить вручную
+            // Кнопка управления
             Button(action: {
-                if audioManager.isListening {
-                    audioManager.stopListening()
-                } else if !audioManager.isProcessing {
-                    audioManager.startListening()
+                if audioManager.isAutoMode {
+                    // В авто режиме: ПРЕРВАТЬ всё
+                    audioManager.interrupt()
+                } else {
+                    // В ручном режиме: старт/стоп
+                    if audioManager.isListening {
+                        audioManager.stopListening()
+                    } else if !audioManager.isProcessing {
+                        audioManager.startListening()
+                    }
                 }
             }) {
-                Text(audioManager.isListening ? "🛑 СТОП" : (audioManager.isProcessing ? "⏳ Обработка..." : "🎙️ ГОВОРИ"))
+                Text(getButtonText())
                     .font(.system(size: 32, weight: .bold))
                     .foregroundColor(.white)
                     .frame(width: 320, height: 120)
-                    .background(audioManager.isListening ? Color.red : (audioManager.isProcessing ? Color.gray : Color.blue))
+                    .background(getButtonColor())
                     .cornerRadius(20)
             }
-            .disabled(audioManager.isProcessing)
-            .padding(.bottom, 50)
+            .padding(.bottom, 20)
+
+            // Маленькая кнопка переключения режима
+            Button(action: {
+                audioManager.isAutoMode.toggle()
+                if audioManager.isAutoMode {
+                    audioManager.startListeningAuto()
+                } else {
+                    audioManager.interrupt()
+                }
+            }) {
+                Text(audioManager.isAutoMode ? "🤖 Авто режим" : "✋ Ручной режим")
+                    .font(.system(size: 16))
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 10)
+                    .background(Color.orange)
+                    .cornerRadius(10)
+            }
+            .padding(.bottom, 30)
         }
         .padding()
         .onAppear { audioManager.sayGreeting() }
@@ -57,7 +122,7 @@ final class AudioManager: NSObject, ObservableObject {
     @Published var statusText = "🤖 Малой"
     @Published var isListening = false
     @Published var isProcessing = false
-    @Published var recordingTimeLeft = 5
+    @Published var isAutoMode = true  // Автоматический режим по умолчанию
 
     // API key is stored in Config.swift (not tracked in git for security)
     private let openAIKey = Config.openAIKey
@@ -67,15 +132,23 @@ final class AudioManager: NSObject, ObservableObject {
     private var audioFile: AVAudioFile?
     private var player: AVAudioPlayer?
     private var isSpeaking = false
-    private var recordingTimer: Timer?
-    private let recordingDuration = 5 // секунд для записи
+
+    // VAD (Voice Activity Detection) параметры
+    private var silenceTimer: Timer?
+    private var lastSpeechTime = Date()
+    private let silenceThreshold: TimeInterval = 1.5  // 1.5 сек тишины → стоп
+    private let speechThreshold: Float = -40.0  // дБ, выше которого считаем речью
 
     // MARK: Приветствие
     func sayGreeting() {
         statusText = "🗣️ Приветствие..."
-        say("Привет, я Малой! Нажми кнопку и говори.") {
+        say("Привет, я Малой! Просто говори, я слушаю.") {
             DispatchQueue.main.async {
-                self.statusText = "💤 Жду команды"
+                if self.isAutoMode {
+                    self.startListeningAuto()
+                } else {
+                    self.statusText = "💤 Жду команды"
+                }
             }
         }
     }
@@ -166,6 +239,10 @@ final class AudioManager: NSObject, ObservableObject {
         audioEngine?.stop()
         audioEngine?.inputNode.removeTap(onBus: 0)
 
+        // Останавливаем таймер VAD
+        silenceTimer?.invalidate()
+        silenceTimer = nil
+
         // Важно: закрываем файл перед обработкой
         audioFile = nil
         audioEngine = nil
@@ -174,6 +251,162 @@ final class AudioManager: NSObject, ObservableObject {
         print("========== КОНЕЦ ЗАПИСИ ==========\n")
 
         transcribeAudio()
+    }
+
+    // MARK: Автоматическое прослушивание с VAD
+    func startListeningAuto() {
+        guard !isSpeaking && !isProcessing else {
+            print("⚠️ Cannot start auto: isSpeaking=\(isSpeaking), isProcessing=\(isProcessing)")
+            return
+        }
+
+        print("\n========== AUTO LISTENING (VAD) ==========")
+        statusText = "👂 Слушаю..."
+        lastSpeechTime = Date()  // Сбрасываем таймер
+
+        // Переключаемся на запись
+        do {
+            try AVAudioSession.sharedInstance().setCategory(.record, mode: .default, options: [.allowBluetoothHFP, .duckOthers])
+            try AVAudioSession.sharedInstance().setActive(true)
+            print("✅ Audio session configured for VAD recording")
+        } catch {
+            print("❌ Audio session VAD error:", error)
+            return
+        }
+
+        let engine = AVAudioEngine()
+        audioEngine = engine
+        let input = engine.inputNode
+        input.removeTap(onBus: 0)
+
+        let inputFormat = input.outputFormat(forBus: 0)
+        print("🎤 VAD format: \(inputFormat.sampleRate)Hz, \(inputFormat.channelCount) ch")
+
+        // Создаём файл для записи
+        do {
+            audioFile = try AVAudioFile(forWriting: audioFilename,
+                                        settings: inputFormat.settings,
+                                        commonFormat: .pcmFormatFloat32,
+                                        interleaved: false)
+            print("✅ VAD audio file ready")
+        } catch {
+            print("❌ VAD file error:", error)
+            return
+        }
+
+        // Устанавливаем tap с анализом громкости
+        input.installTap(onBus: 0, bufferSize: 8192, format: inputFormat) { [weak self] buffer, time in
+            guard let self = self else { return }
+
+            // Записываем в файл
+            do {
+                try self.audioFile?.write(from: buffer)
+            } catch {
+                print("❌ VAD write error at \(time.sampleTime): \(error)")
+            }
+
+            // Анализируем громкость (RMS - Root Mean Square)
+            guard let channelData = buffer.floatChannelData?[0] else { return }
+            let frames = buffer.frameLength
+            var sum: Float = 0.0
+            for i in 0..<Int(frames) {
+                let sample = channelData[i]
+                sum += sample * sample
+            }
+            let rms = sqrt(sum / Float(frames))
+            let db = 20 * log10(rms)
+
+            // Если громкость выше порога → обновляем время последней речи
+            if db > self.speechThreshold {
+                DispatchQueue.main.async {
+                    self.lastSpeechTime = Date()
+                    if !self.isListening {
+                        self.isListening = true
+                        self.statusText = "🎙️ Записываю..."
+                        print("🗣️ Speech detected! (level: \(String(format: "%.1f", db))dB)")
+                    }
+                }
+            }
+        }
+
+        do {
+            try engine.start()
+            print("✅ VAD engine started")
+        } catch {
+            print("❌ VAD engine error:", error)
+            return
+        }
+
+        // Запускаем таймер проверки тишины (каждые 0.15 сек)
+        silenceTimer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: true) { [weak self] _ in
+            guard let self = self else { return }
+
+            let silenceDuration = Date().timeIntervalSince(self.lastSpeechTime)
+
+            // Если было начато прослушивание И прошло достаточно тишины → останавливаем
+            if self.isListening && silenceDuration > self.silenceThreshold {
+                print("🔇 Silence detected for \(String(format: "%.1f", silenceDuration))s → stopping")
+                self.stopListeningAuto()
+            }
+        }
+    }
+
+    // Остановка автоматического прослушивания
+    func stopListeningAuto() {
+        guard isListening else { return }
+
+        print("🛑 Auto-stopping recording...")
+        isListening = false
+        statusText = "⏳ Обработка..."
+
+        // Останавливаем движок
+        audioEngine?.stop()
+        audioEngine?.inputNode.removeTap(onBus: 0)
+
+        // Останавливаем таймер
+        silenceTimer?.invalidate()
+        silenceTimer = nil
+
+        // Закрываем файл
+        audioFile = nil
+        audioEngine = nil
+
+        print("✅ Auto-recording stopped")
+        print("========== END VAD ==========\n")
+
+        transcribeAudio()
+    }
+
+    // Прерывание (остановка всего)
+    func interrupt() {
+        print("🛑 INTERRUPT - stopping everything")
+
+        // Останавливаем запись
+        if isListening {
+            audioEngine?.stop()
+            audioEngine?.inputNode.removeTap(onBus: 0)
+            audioFile = nil
+            audioEngine = nil
+            isListening = false
+        }
+
+        // Останавливаем таймер
+        silenceTimer?.invalidate()
+        silenceTimer = nil
+
+        // Останавливаем воспроизведение
+        player?.stop()
+        isSpeaking = false
+
+        isProcessing = false
+        statusText = "🛑 Прервано"
+
+        // Если авто режим → перезапускаем прослушивание через секунду
+        if isAutoMode {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                self.startListeningAuto()
+            }
+        }
     }
 
     // MARK: Whisper (с детальным логированием)
@@ -393,7 +626,12 @@ final class AudioManager: NSObject, ObservableObject {
             self.say(reply) {
                 DispatchQueue.main.async {
                     self.isProcessing = false
-                    self.statusText = "💤 Жду команды"
+                    // Если авто режим → продолжаем слушать
+                    if self.isAutoMode {
+                        self.startListeningAuto()
+                    } else {
+                        self.statusText = "💤 Жду команды"
+                    }
                 }
             }
         }.resume()
