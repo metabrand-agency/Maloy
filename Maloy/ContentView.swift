@@ -26,7 +26,7 @@ struct ContentView: View {
 
             Spacer()
 
-            // Большая кнопка для управления
+            // Большая кнопка - можно остановить вручную
             Button(action: {
                 if audioManager.isListening {
                     audioManager.stopListening()
@@ -37,7 +37,7 @@ struct ContentView: View {
                 Text(audioManager.isListening ? "🛑 СТОП" : (audioManager.isProcessing ? "⏳ Обработка..." : "🎙️ ГОВОРИ"))
                     .font(.system(size: 32, weight: .bold))
                     .foregroundColor(.white)
-                    .frame(width: 280, height: 120)
+                    .frame(width: 320, height: 120)
                     .background(audioManager.isListening ? Color.red : (audioManager.isProcessing ? Color.gray : Color.blue))
                     .cornerRadius(20)
             }
@@ -57,6 +57,7 @@ final class AudioManager: NSObject, ObservableObject {
     @Published var statusText = "🤖 Малой"
     @Published var isListening = false
     @Published var isProcessing = false
+    @Published var recordingTimeLeft = 5
 
     // API key is stored in Config.swift (not tracked in git for security)
     private let openAIKey = Config.openAIKey
@@ -66,6 +67,8 @@ final class AudioManager: NSObject, ObservableObject {
     private var audioFile: AVAudioFile?
     private var player: AVAudioPlayer?
     private var isSpeaking = false
+    private var recordingTimer: Timer?
+    private let recordingDuration = 5 // секунд для записи
 
     // MARK: Приветствие
     func sayGreeting() {
@@ -77,7 +80,7 @@ final class AudioManager: NSObject, ObservableObject {
         }
     }
 
-    // MARK: Слушание (упрощенная версия - без автодетекции)
+    // MARK: Слушание (ручное управление с увеличенным буфером)
     func startListening() {
         guard !isSpeaking && !isProcessing else {
             print("⚠️ Cannot start: isSpeaking=\(isSpeaking), isProcessing=\(isProcessing)")
@@ -126,19 +129,22 @@ final class AudioManager: NSObject, ObservableObject {
             return
         }
 
-        // Tap в родном формате устройства (универсально работает везде)
-        input.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { buffer, _ in
-            // Просто записываем буфер как есть, без анализа
+        // УВЕЛИЧЕННЫЙ bufferSize: 4096 → 8192 для более надежной записи
+        // Это дает больше времени на запись буфера в файл
+        input.installTap(onBus: 0, bufferSize: 8192, format: inputFormat) { [weak self] buffer, time in
+            guard let self = self else { return }
+
+            // Записываем буфер в файл с логированием ошибок
             do {
                 try self.audioFile?.write(from: buffer)
             } catch {
-                print("❌ File write error:", error)
+                print("❌ File write error at time \(time.sampleTime): \(error)")
             }
         }
 
         do {
             try engine.start()
-            print("✅ Audio engine started")
+            print("✅ Audio engine started with buffer size 8192")
         } catch {
             print("❌ Engine start error:", error)
             stopListening()
@@ -156,8 +162,12 @@ final class AudioManager: NSObject, ObservableObject {
         isListening = false
         statusText = "⏳ Обработка..."
 
+        // Останавливаем движок и удаляем tap
         audioEngine?.stop()
         audioEngine?.inputNode.removeTap(onBus: 0)
+
+        // Важно: закрываем файл перед обработкой
+        audioFile = nil
         audioEngine = nil
 
         print("✅ Recording stopped")
