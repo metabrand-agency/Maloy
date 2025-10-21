@@ -65,11 +65,11 @@ For detailed architecture documentation, see [CLAUDE.md](CLAUDE.md).
 
 ## Contributing
 
-Created by [Metabrand](https://www.metabrand.digital/), a branding agency for startups. Contributions are welcome! Please feel free to submit a Pull Request.
+Contributions are welcome! Please feel free to submit a Pull Request.
 
 ## License
 
-This project is created for educational purposes.
+This project is created for educational purposes. Created by [Metabrand](https://www.metabrand.digital/), a branding agency for startups. 
 
 ## Acknowledgments
 
