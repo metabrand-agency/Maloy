@@ -4,26 +4,48 @@ import Combine
 
 struct ContentView: View {
     @StateObject private var audioManager = AudioManager()
-    
+
     var body: some View {
-        VStack(spacing: 20) {
-            Text(audioManager.isListening ? "🎙️ Малой слушает..." : "🤖 Малой говорит...")
-                .font(.title2).bold()
+        VStack(spacing: 30) {
+            Text(audioManager.statusText)
+                .font(.title).bold()
                 .padding()
-            
+
             if !audioManager.recognizedText.isEmpty {
                 Text("👂 \(audioManager.recognizedText)")
                     .foregroundColor(.gray)
                     .padding()
+                    .multilineTextAlignment(.center)
             }
-            
+
             if !audioManager.responseText.isEmpty {
                 Text("💬 \(audioManager.responseText)")
                     .padding()
+                    .multilineTextAlignment(.center)
             }
+
+            Spacer()
+
+            // Большая кнопка для управления
+            Button(action: {
+                if audioManager.isListening {
+                    audioManager.stopListening()
+                } else if !audioManager.isProcessing {
+                    audioManager.startListening()
+                }
+            }) {
+                Text(audioManager.isListening ? "🛑 СТОП" : (audioManager.isProcessing ? "⏳ Обработка..." : "🎙️ ГОВОРИ"))
+                    .font(.system(size: 32, weight: .bold))
+                    .foregroundColor(.white)
+                    .frame(width: 280, height: 120)
+                    .background(audioManager.isListening ? Color.red : (audioManager.isProcessing ? Color.gray : Color.blue))
+                    .cornerRadius(20)
+            }
+            .disabled(audioManager.isProcessing)
+            .padding(.bottom, 50)
         }
         .padding()
-        .onAppear { audioManager.startConversation() }
+        .onAppear { audioManager.sayGreeting() }
     }
 }
 
@@ -32,44 +54,51 @@ struct ContentView: View {
 final class AudioManager: NSObject, ObservableObject {
     @Published var recognizedText = ""
     @Published var responseText = ""
+    @Published var statusText = "🤖 Малой"
     @Published var isListening = false
+    @Published var isProcessing = false
 
     // API key is stored in Config.swift (not tracked in git for security)
     private let openAIKey = Config.openAIKey
-    
+
     private let audioFilename = FileManager.default.temporaryDirectory.appendingPathComponent("input.wav")
     private var audioEngine: AVAudioEngine?
     private var audioFile: AVAudioFile?
-    private var silenceTimer: Timer?
-    private var lastSpeechTime = Date()
     private var player: AVAudioPlayer?
-    private var isProcessing = false
     private var isSpeaking = false
-    private var lastRecognizedText = "" // Для предотвращения повторов
 
-    // MARK: Старт диалога
-    func startConversation() {
-        say("Привет, я Малой! Чем займёмся, Фёдор?") {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
-                self.startListening()
+    // MARK: Приветствие
+    func sayGreeting() {
+        statusText = "🗣️ Приветствие..."
+        say("Привет, я Малой! Нажми кнопку и говори.") {
+            DispatchQueue.main.async {
+                self.statusText = "💤 Жду команды"
             }
         }
     }
 
-    // MARK: Слушание (запись в родном формате микрофона)
+    // MARK: Слушание (упрощенная версия - без автодетекции)
     func startListening() {
-        guard !isSpeaking else { return }
+        guard !isSpeaking && !isProcessing else {
+            print("⚠️ Cannot start: isSpeaking=\(isSpeaking), isProcessing=\(isProcessing)")
+            return
+        }
+
+        print("\n========== НАЧАЛО ЗАПИСИ ==========")
         recognizedText = ""
+        responseText = ""
         isListening = true
-        isProcessing = false
-        lastSpeechTime = Date()
+        statusText = "🎙️ Слушаю..."
 
         // Переключаемся на запись перед стартом движка
         do {
-            try AVAudioSession.sharedInstance().setCategory(.record, mode: .default, options: [.allowBluetoothHFP])
+            try AVAudioSession.sharedInstance().setCategory(.record, mode: .default, options: [.allowBluetoothHFP, .duckOthers])
             try AVAudioSession.sharedInstance().setActive(true)
+            print("✅ Audio session configured for recording")
         } catch {
-            print("Audio session record error:", error)
+            print("❌ Audio session record error:", error)
+            stopListening()
+            return
         }
 
         let engine = AVAudioEngine()
@@ -82,7 +111,7 @@ final class AudioManager: NSObject, ObservableObject {
         // Получаем формат микрофона (может быть любой - встроенный, наушники, bluetooth)
         let inputFormat = input.outputFormat(forBus: 0)
 
-        print("🎤 Recording format: \(inputFormat.sampleRate)Hz, \(inputFormat.channelCount) ch")
+        print("🎤 Recording format: \(inputFormat.sampleRate)Hz, \(inputFormat.channelCount) ch, \(inputFormat.commonFormat.rawValue)")
 
         // Используем родной формат для tap (без конвертации)
         do {
@@ -90,77 +119,70 @@ final class AudioManager: NSObject, ObservableObject {
                                         settings: inputFormat.settings,
                                         commonFormat: .pcmFormatFloat32,
                                         interleaved: false)
+            print("✅ Audio file created: \(audioFilename.path)")
         } catch {
-            print("⚠️ Audio file error:", error)
+            print("❌ Audio file error:", error)
+            stopListening()
             return
         }
 
         // Tap в родном формате устройства (универсально работает везде)
         input.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { buffer, _ in
-            // Детектируем речь для определения тишины
-            self.detectSpeech(buffer: buffer)
-
-            // Записываем буфер как есть
+            // Просто записываем буфер как есть, без анализа
             do {
                 try self.audioFile?.write(from: buffer)
             } catch {
-                print("⚠️ File write error:", error)
+                print("❌ File write error:", error)
             }
         }
 
         do {
             try engine.start()
+            print("✅ Audio engine started")
         } catch {
-            print("Engine start error:", error)
+            print("❌ Engine start error:", error)
+            stopListening()
             return
         }
 
-        startSilenceTimer()
-        print("🎧 Listening started in native format")
+        print("🎧 Recording... Press STOP when done")
     }
 
-    // Остановка слушания (дергается таймером тишины)
+    // Остановка слушания (вызывается кнопкой)
     func stopListening() {
+        guard isListening else { return }
+
+        print("🛑 Stopping recording...")
         isListening = false
-        silenceTimer?.invalidate()
+        statusText = "⏳ Обработка..."
+
         audioEngine?.stop()
         audioEngine?.inputNode.removeTap(onBus: 0)
-        print("🛑 Listening stopped")
+        audioEngine = nil
+
+        print("✅ Recording stopped")
+        print("========== КОНЕЦ ЗАПИСИ ==========\n")
+
         transcribeAudio()
     }
 
-    // MARK: Детектор речи (настроен для полных предложений)
-    private func detectSpeech(buffer: AVAudioPCMBuffer) {
-        guard !isProcessing, let channel = buffer.floatChannelData?[0] else { return }
-        let count = Int(buffer.frameLength)
-        let frame = Array(UnsafeBufferPointer(start: channel, count: count))
-        let mean = frame.map { $0 * $0 }.reduce(0, +) / Float(max(count, 1))
-        let rms = sqrt(mean)
-        let avgPower = 20 * log10(max(rms, 1e-7)) // защита от -inf
-
-        // Чувствительный порог для надежной детекции речи
-        // -45dB ловит нормальную речь, но не очень громкую музыку
-        if avgPower > -45 {
-            lastSpeechTime = Date()
-        }
-    }
-
-    private func startSilenceTimer() {
-        silenceTimer?.invalidate()
-        silenceTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { _ in
-            // Увеличенный таймаут: 2.0 сек - дает время на паузы в речи
-            // Не обрубает предложения на середине
-            if Date().timeIntervalSince(self.lastSpeechTime) > 2.0 {
-                self.stopListening()
-            }
-        }
-    }
-
-    // MARK: Whisper
+    // MARK: Whisper (с детальным логированием)
     private func transcribeAudio() {
         isProcessing = true
-        print("🧠 Whisper processing…")
-        
+        statusText = "🧠 Распознаю речь..."
+        print("\n========== WHISPER API ==========")
+
+        guard let audioData = try? Data(contentsOf: audioFilename) else {
+            print("❌ Cannot read audio file")
+            DispatchQueue.main.async {
+                self.statusText = "❌ Ошибка чтения файла"
+                self.isProcessing = false
+            }
+            return
+        }
+
+        print("📦 Audio file size: \(audioData.count / 1024)KB")
+
         var req = URLRequest(url: URL(string: "https://api.openai.com/v1/audio/transcriptions")!)
         req.httpMethod = "POST"
         req.addValue("Bearer \(openAIKey)", forHTTPHeaderField: "Authorization")
@@ -172,7 +194,7 @@ final class AudioManager: NSObject, ObservableObject {
         body.append("--\(boundary)\r\n".data(using: .utf8)!)
         body.append("Content-Disposition: form-data; name=\"file\"; filename=\"input.wav\"\r\n".data(using: .utf8)!)
         body.append("Content-Type: audio/wav\r\n\r\n".data(using: .utf8)!)
-        body.append((try? Data(contentsOf: audioFilename)) ?? Data())
+        body.append(audioData)
 
         // model
         body.append("\r\n--\(boundary)\r\n".data(using: .utf8)!)
@@ -197,59 +219,88 @@ final class AudioManager: NSObject, ObservableObject {
         body.append("--\(boundary)--\r\n".data(using: .utf8)!)
         req.httpBody = body
 
-        URLSession.shared.dataTask(with: req) { data, _, _ in
-            guard let data = data,
-                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let text = json["text"] as? String else {
-                print("⚠️ Whisper error or no response")
+        print("📤 Sending to Whisper API...")
+        let startTime = Date()
+
+        URLSession.shared.dataTask(with: req) { data, response, error in
+            let elapsed = Date().timeIntervalSince(startTime)
+            print("⏱️ Whisper response time: \(String(format: "%.1f", elapsed))s")
+
+            if let error = error {
+                print("❌ Whisper error: \(error.localizedDescription)")
                 DispatchQueue.main.async {
+                    self.statusText = "❌ Ошибка сети"
                     self.isProcessing = false
-                    // Небольшая пауза перед повторным слушанием при ошибке
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
-                        self.startListening()
-                    }
+                }
+                return
+            }
+
+            guard let data = data else {
+                print("❌ No data received")
+                DispatchQueue.main.async {
+                    self.statusText = "❌ Нет данных"
+                    self.isProcessing = false
+                }
+                return
+            }
+
+            guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                print("❌ Cannot parse JSON")
+                if let responseString = String(data: data, encoding: .utf8) {
+                    print("Raw response: \(responseString)")
+                }
+                DispatchQueue.main.async {
+                    self.statusText = "❌ Ошибка API"
+                    self.isProcessing = false
+                }
+                return
+            }
+
+            guard let text = json["text"] as? String else {
+                print("❌ No 'text' field in response")
+                print("JSON: \(json)")
+                DispatchQueue.main.async {
+                    self.statusText = "❌ Нет текста"
+                    self.isProcessing = false
                 }
                 return
             }
 
             let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            print("✅ Recognized: \"\(trimmedText)\"")
+            print("========== END WHISPER ==========\n")
 
-            // Если ничего не распознано или слишком короткое - просто продолжаем слушать
-            if trimmedText.isEmpty || trimmedText.count < 2 {
-                print("🤷 Пусто или слишком короткое, продолжаем слушать")
+            if trimmedText.isEmpty {
+                print("⚠️ Empty recognition - nothing heard")
                 DispatchQueue.main.async {
+                    self.statusText = "🤷 Ничего не услышал"
+                    self.recognizedText = "(пусто)"
                     self.isProcessing = false
-                    self.startListening()
-                }
-                return
-            }
-
-            // Защита от повторения того же самого (эхо или зацикливание)
-            if trimmedText == self.lastRecognizedText {
-                print("⚠️ Повтор предыдущего распознавания, игнорируем")
-                DispatchQueue.main.async {
-                    self.isProcessing = false
-                    self.startListening()
                 }
                 return
             }
 
             DispatchQueue.main.async {
-                self.lastRecognizedText = trimmedText
                 self.recognizedText = trimmedText
-                print("🗣️ Распознано:", self.recognizedText)
-                self.askGPT(self.recognizedText)
+                self.askGPT(trimmedText)
             }
         }.resume()
     }
 
-    // MARK: GPT (Малой)
+    // MARK: GPT (с детальным логированием)
     private func askGPT(_ text: String) {
         guard !text.isEmpty else {
-            self.isProcessing = false
-            self.startListening()
+            print("⚠️ Empty text for GPT")
+            DispatchQueue.main.async {
+                self.isProcessing = false
+                self.statusText = "💤 Жду команды"
+            }
             return
         }
+
+        statusText = "🤔 Думаю..."
+        print("\n========== GPT API ==========")
+        print("📝 User input: \"\(text)\"")
 
         let url = URL(string: "https://api.openai.com/v1/chat/completions")!
         let systemPrompt = """
@@ -277,46 +328,78 @@ final class AudioManager: NSObject, ObservableObject {
         req.addValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try? JSONSerialization.data(withJSONObject: body)
 
-        print("🤖 Asking GPT...")
+        print("📤 Sending to GPT...")
+        let startTime = Date()
 
-        URLSession.shared.dataTask(with: req) { data, _, _ in
-            guard let data = data,
-                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let choices = json["choices"] as? [[String: Any]],
-                  let msg = choices.first?["message"] as? [String: Any],
-                  let reply = msg["content"] as? String else {
-                print("❌ GPT error")
+        URLSession.shared.dataTask(with: req) { data, response, error in
+            let elapsed = Date().timeIntervalSince(startTime)
+            print("⏱️ GPT response time: \(String(format: "%.1f", elapsed))s")
+
+            if let error = error {
+                print("❌ GPT error: \(error.localizedDescription)")
                 DispatchQueue.main.async {
+                    self.statusText = "❌ Ошибка GPT"
                     self.isProcessing = false
-                    self.startListening()
                 }
                 return
             }
 
-            print("✅ GPT response received")
+            guard let data = data,
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                print("❌ Cannot parse GPT response")
+                DispatchQueue.main.async {
+                    self.statusText = "❌ Ошибка парсинга"
+                    self.isProcessing = false
+                }
+                return
+            }
 
-            // Сразу обновляем UI и запускаем TTS (параллельно, без ожидания)
+            guard let choices = json["choices"] as? [[String: Any]],
+                  let msg = choices.first?["message"] as? [String: Any],
+                  let reply = msg["content"] as? String else {
+                print("❌ No content in GPT response")
+                print("JSON: \(json)")
+                DispatchQueue.main.async {
+                    self.statusText = "❌ Нет ответа"
+                    self.isProcessing = false
+                }
+                return
+            }
+
+            print("✅ GPT reply: \"\(reply)\"")
+            print("========== END GPT ==========\n")
+
+            // ПОСЛЕДОВАТЕЛЬНО: сначала обновляем UI, потом TTS, потом готовы слушать снова
             DispatchQueue.main.async {
                 self.responseText = reply
-                print("💬 Малой:", reply)
-
-                // TTS начинается НЕМЕДЛЕННО после получения текста
                 self.say(reply) {
-                    self.isProcessing = false
-                    self.startListening()
+                    // После озвучки готовы к следующему разу
+                    DispatchQueue.main.async {
+                        self.isProcessing = false
+                        self.statusText = "💤 Жду команды"
+                    }
                 }
             }
         }.resume()
     }
 
-    // MARK: OpenAI TTS (оптимизировано для быстрого старта)
+    // MARK: TTS (с детальным логированием)
     func say(_ text: String, completion: (() -> Void)? = nil) {
-        guard let url = URL(string: "https://api.openai.com/v1/audio/speech") else { return }
+        statusText = "🗣️ Говорю..."
+        print("\n========== TTS API ==========")
+        print("💬 Text to speak: \"\(text)\"")
+
+        guard let url = URL(string: "https://api.openai.com/v1/audio/speech") else {
+            print("❌ Invalid TTS URL")
+            completion?()
+            return
+        }
+
         let json: [String: Any] = [
             "model": "gpt-4o-mini-tts",
-            "voice": "alloy", // можно попробовать "verse", "shimmer", "soft"
+            "voice": "alloy",
             "input": text,
-            "speed": 1.0 // нормальная скорость
+            "speed": 1.0
         ]
 
         var req = URLRequest(url: url)
@@ -325,25 +408,37 @@ final class AudioManager: NSObject, ObservableObject {
         req.addValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try? JSONSerialization.data(withJSONObject: json)
 
-        print("🎵 Requesting TTS...")
+        print("📤 Requesting TTS...")
+        let startTime = Date()
 
         URLSession.shared.dataTask(with: req) { data, response, error in
+            let elapsed = Date().timeIntervalSince(startTime)
+            print("⏱️ TTS response time: \(String(format: "%.1f", elapsed))s")
+
             if let error = error {
                 print("❌ TTS error:", error.localizedDescription)
+                DispatchQueue.main.async {
+                    self.statusText = "❌ Ошибка TTS"
+                }
                 completion?()
                 return
             }
 
             guard let data = data, !data.isEmpty else {
                 print("❌ Empty TTS response")
+                DispatchQueue.main.async {
+                    self.statusText = "❌ Нет аудио"
+                }
                 completion?()
                 return
             }
 
+            print("✅ TTS received (\(data.count / 1024)KB)")
+
             let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("speech.mp3")
             do {
                 try data.write(to: tmp, options: .atomic)
-                print("✅ TTS received (\(data.count / 1024)KB)")
+                print("✅ TTS file saved: \(tmp.path)")
                 DispatchQueue.main.async {
                     self.playAudio(from: tmp, completion: completion)
                 }
@@ -355,38 +450,46 @@ final class AudioManager: NSObject, ObservableObject {
     }
 
     private func playAudio(from url: URL, completion: (() -> Void)? = nil) {
+        print("🔊 Starting playback...")
+
         do {
             // Переключаемся на воспроизведение перед TTS
             try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
             try AVAudioSession.sharedInstance().setActive(true)
+            print("✅ Audio session configured for playback")
 
             isSpeaking = true
             let p = try AVAudioPlayer(contentsOf: url)
             player = p
 
-            // Подготовка к воспроизведению (загружает в память)
             p.prepareToPlay()
-
-            // Немедленное воспроизведение
             let success = p.play()
 
             if !success {
-                print("⚠️ Failed to start audio playback")
+                print("❌ Failed to start audio playback")
                 self.isSpeaking = false
+                DispatchQueue.main.async {
+                    self.statusText = "❌ Ошибка воспроизведения"
+                }
                 completion?()
                 return
             }
 
-            print("🔊 Playing audio (\(String(format: "%.1f", p.duration))s)")
+            print("🔊 Playing audio (duration: \(String(format: "%.1f", p.duration))s)")
 
-            // Используем более точный таймер завершения
+            // Ждем окончания + небольшой буфер
             DispatchQueue.main.asyncAfter(deadline: .now() + p.duration + 0.3) {
+                print("✅ Playback finished")
+                print("========== END TTS ==========\n")
                 self.isSpeaking = false
                 completion?()
             }
         } catch {
-            print("TTS play error:", error)
+            print("❌ TTS play error:", error)
             self.isSpeaking = false
+            DispatchQueue.main.async {
+                self.statusText = "❌ Ошибка плеера"
+            }
             completion?()
         }
     }
