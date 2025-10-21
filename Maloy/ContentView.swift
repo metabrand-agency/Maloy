@@ -297,7 +297,7 @@ final class AudioManager: NSObject, ObservableObject {
         }.resume()
     }
 
-    // MARK: GPT (с детальным логированием)
+    // MARK: GPT (оптимизировано для скорости)
     private func askGPT(_ text: String) {
         guard !text.isEmpty else {
             print("⚠️ Empty text for GPT")
@@ -308,7 +308,11 @@ final class AudioManager: NSObject, ObservableObject {
             return
         }
 
-        statusText = "🤔 Думаю..."
+        // Сразу показываем статус
+        DispatchQueue.main.async {
+            self.statusText = "🤔 Думаю..."
+        }
+
         print("\n========== GPT API ==========")
         print("📝 User input: \"\(text)\"")
 
@@ -379,25 +383,30 @@ final class AudioManager: NSObject, ObservableObject {
             print("✅ GPT reply: \"\(reply)\"")
             print("========== END GPT ==========\n")
 
-            // ПОСЛЕДОВАТЕЛЬНО: сначала обновляем UI, потом TTS, потом готовы слушать снова
+            // ПАРАЛЛЕЛЬНО: обновляем UI и сразу запускаем TTS (не ждем)
             DispatchQueue.main.async {
                 self.responseText = reply
-                self.say(reply) {
-                    // После озвучки готовы к следующему разу
-                    DispatchQueue.main.async {
-                        self.isProcessing = false
-                        self.statusText = "💤 Жду команды"
-                    }
+            }
+
+            // TTS запускается сразу, не дожидаясь обновления UI
+            self.say(reply) {
+                DispatchQueue.main.async {
+                    self.isProcessing = false
+                    self.statusText = "💤 Жду команды"
                 }
             }
         }.resume()
     }
 
-    // MARK: TTS (с детальным логированием)
+    // MARK: TTS (оптимизировано для скорости)
     func say(_ text: String, completion: (() -> Void)? = nil) {
-        statusText = "🗣️ Говорю..."
         print("\n========== TTS API ==========")
         print("💬 Text to speak: \"\(text)\"")
+
+        // Обновляем статус только в main thread
+        DispatchQueue.main.async {
+            self.statusText = "🗣️ Говорю..."
+        }
 
         guard let url = URL(string: "https://api.openai.com/v1/audio/speech") else {
             print("❌ Invalid TTS URL")
