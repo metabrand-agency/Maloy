@@ -333,7 +333,7 @@ final class AudioManager: NSObject, ObservableObject {
                 ["role": "system", "content": systemPrompt],
                 ["role": "user", "content": text]
             ],
-            "max_tokens": 200
+            "max_tokens": 80  // Сократили с 200 до 80 для более коротких ответов
         ]
 
         var req = URLRequest(url: url)
@@ -383,12 +383,13 @@ final class AudioManager: NSObject, ObservableObject {
             print("✅ GPT reply: \"\(reply)\"")
             print("========== END GPT ==========\n")
 
-            // ПАРАЛЛЕЛЬНО: обновляем UI и сразу запускаем TTS (не ждем)
+            // МОМЕНТАЛЬНО показываем текст ответа пользователю
             DispatchQueue.main.async {
                 self.responseText = reply
+                self.statusText = "🗣️ Готовлю озвучку..."
             }
 
-            // TTS запускается сразу, не дожидаясь обновления UI
+            // TTS запускается параллельно (не блокирует UI)
             self.say(reply) {
                 DispatchQueue.main.async {
                     self.isProcessing = false
@@ -418,7 +419,7 @@ final class AudioManager: NSObject, ObservableObject {
             "model": "gpt-4o-mini-tts",
             "voice": "alloy",
             "input": text,
-            "speed": 1.0
+            "speed": 1.15  // Увеличили скорость с 1.0 до 1.15 для быстрой речи
         ]
 
         var req = URLRequest(url: url)
