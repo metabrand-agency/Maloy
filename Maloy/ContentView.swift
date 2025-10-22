@@ -4,6 +4,7 @@ import Combine
 
 struct ContentView: View {
     @StateObject private var audioManager = AudioManager()
+    @EnvironmentObject var spotifyManager: SpotifyManager
 
     // Helper функции для кнопки
     private func getButtonText() -> String {
@@ -48,6 +49,33 @@ struct ContentView: View {
 
     var body: some View {
         VStack(spacing: 30) {
+            // Spotify authorization button (top right corner)
+            HStack {
+                Spacer()
+                if !spotifyManager.isAuthorized {
+                    Button(action: {
+                        if let url = spotifyManager.getAuthorizationURL() {
+                            UIApplication.shared.open(url)
+                        }
+                    }) {
+                        Text("🎵 Подключить Spotify")
+                            .font(.system(size: 14))
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 15)
+                            .padding(.vertical, 8)
+                            .background(Color.green)
+                            .cornerRadius(8)
+                    }
+                } else {
+                    Text("✅ Spotify")
+                        .font(.system(size: 14))
+                        .foregroundColor(.green)
+                        .padding(.horizontal, 15)
+                        .padding(.vertical, 8)
+                }
+            }
+            .padding(.horizontal)
+
             Text(audioManager.statusText)
                 .font(.title).bold()
                 .padding()
@@ -126,7 +154,10 @@ struct ContentView: View {
             .padding(.bottom, 30)
         }
         .padding()
-        .onAppear { audioManager.sayGreeting() }
+        .onAppear {
+            audioManager.spotifyManager = spotifyManager
+            audioManager.sayGreeting()
+        }
     }
 }
 
@@ -143,6 +174,9 @@ final class AudioManager: NSObject, ObservableObject {
     // API key is stored in Config.swift (not tracked in git for security)
     private let openAIKey = Config.openAIKey
 
+    // Spotify manager (passed from ContentView)
+    var spotifyManager: SpotifyManager?
+
     private let audioFilename = FileManager.default.temporaryDirectory.appendingPathComponent("input.wav")
     private var audioEngine: AVAudioEngine?
     private var audioFile: AVAudioFile?
@@ -156,7 +190,7 @@ final class AudioManager: NSObject, ObservableObject {
     private let speechThreshold: Float = -40.0  // дБ, выше которого считаем речью
 
     // История разговора для контекста GPT
-    private var conversationHistory: [[String: String]] = []
+    private var conversationHistory: [[String: Any]] = []
     private let maxHistoryPairs = 4  // Храним последние 4 пары вопрос-ответ (8 сообщений)
 
     // MARK: Приветствие
@@ -190,11 +224,11 @@ final class AudioManager: NSObject, ObservableObject {
         isListening = true
         statusText = "🎙️ Слушаю..."
 
-        // Переключаемся на запись перед стартом движка
+        // Переключаемся на запись - используем .playAndRecord чтобы НЕ убивать Spotify
         do {
-            try AVAudioSession.sharedInstance().setCategory(.record, mode: .default, options: [.allowBluetoothHFP, .duckOthers])
-            try AVAudioSession.sharedInstance().setActive(true)
-            print("✅ Audio session configured for recording")
+            try AVAudioSession.sharedInstance().setCategory(.playAndRecord, mode: .default, options: [.allowBluetoothHFP, .duckOthers, .mixWithOthers, .defaultToSpeaker])
+            try AVAudioSession.sharedInstance().setActive(true, options: .notifyOthersOnDeactivation)
+            print("✅ Audio session configured for recording (Spotify compatible)")
         } catch {
             print("❌ Audio session record error:", error)
             stopListening()
@@ -293,11 +327,12 @@ final class AudioManager: NSObject, ObservableObject {
         statusText = "👂 Слушаю..."
         lastSpeechTime = Date()  // Сбрасываем таймер
 
-        // Переключаемся на запись
+        // Переключаемся на запись - используем .playAndRecord чтобы НЕ убивать Spotify
+        // .mixWithOthers позволяет Spotify играть в фоне
         do {
-            try AVAudioSession.sharedInstance().setCategory(.record, mode: .default, options: [.allowBluetoothHFP, .duckOthers])
-            try AVAudioSession.sharedInstance().setActive(true)
-            print("✅ Audio session configured for VAD recording")
+            try AVAudioSession.sharedInstance().setCategory(.playAndRecord, mode: .default, options: [.allowBluetoothHFP, .duckOthers, .mixWithOthers, .defaultToSpeaker])
+            try AVAudioSession.sharedInstance().setActive(true, options: .notifyOthersOnDeactivation)
+            print("✅ Audio session configured for VAD recording (Spotify compatible)")
         } catch {
             print("❌ Audio session VAD error:", error)
             return
@@ -574,6 +609,8 @@ final class AudioManager: NSObject, ObservableObject {
             // ✅ ФИЛЬТРАЦИЯ МУСОРНЫХ РАСПОЗНАВАНИЙ (Whisper галлюцинации)
             let junkPhrases = [
                 "тема животные и фрукты",
+                "вопросы про учебу",
+                "кино и спорт",
                 "спасибо за просмотр",
                 "подписывайтесь на канал",
                 "ставьте лайки",
@@ -632,7 +669,8 @@ final class AudioManager: NSObject, ObservableObject {
 
     // MARK: GPT (с историей разговора)
     private func askGPT(_ text: String) {
-        guard !text.isEmpty else {
+        // Allow empty text only for function call follow-ups (when conversation history has function results)
+        if text.isEmpty && conversationHistory.isEmpty {
             print("⚠️ Empty text for GPT")
             DispatchQueue.main.async {
                 self.isProcessing = false
@@ -653,15 +691,34 @@ final class AudioManager: NSObject, ObservableObject {
         let url = URL(string: "https://api.openai.com/v1/chat/completions")!
 
         // ✅ СОКРАЩЕННЫЙ ПРОМПТ (экономия токенов, быстрее обработка)
-        let systemPrompt = """
+        var systemPrompt = """
         Ты Малой — голосовой помощник. Говоришь с Фёдором (15 лет, незрячий, 8 класс).
         Стиль: на равных, без сюсюканья, современный сленг OK, можно шутить.
         Описывая предметы → упоминай форму, размер, текстуру (он незрячий).
         Отвечай кратко (2-4 фразы). Английские слова можно.
         """
 
-        // ✅ ДОБАВЛЯЕМ ТЕКУЩИЙ ВОПРОС В ИСТОРИЮ
-        conversationHistory.append(["role": "user", "content": text])
+        if spotifyManager?.isAuthorized == true {
+            systemPrompt += """
+
+            ВАЖНО: У тебя есть Spotify функции. Когда пользователь просит включить музыку - СРАЗУ вызывай функцию, НЕ спрашивай подтверждения.
+            Примеры:
+            - "Включи Моргенштерна" → вызови spotify_search_and_play("Моргенштерн")
+            - "Поставь на паузу" / "Стоп" / "Останови" → вызови spotify_pause
+            - "Следующий трек" / "Дальше" / "Некст" → вызови spotify_next
+            - "Продолжи" / "Играй" → вызови spotify_play
+
+            ОЧЕНЬ ВАЖНО: Слова "стоп", "останови", "хватит", "выключи музыку" → ВСЕГДА вызывай spotify_pause!
+
+            Когда включаешь музыку - отвечай МАКСИМАЛЬНО КРАТКО (1 фраза), чтобы не заглушать песню долгой речью.
+            Примеры хороших ответов: "Лови!", "Играет!", "Включаю!", "Готово!"
+            """
+        }
+
+        // ✅ ДОБАВЛЯЕМ ТЕКУЩИЙ ВОПРОС В ИСТОРИЮ (только если не пустой)
+        if !text.isEmpty {
+            conversationHistory.append(["role": "user", "content": text])
+        }
 
         // ✅ СКОЛЬЗЯЩЕЕ ОКНО: удаляем старые пары, если история слишком длинная
         // Каждая пара = user + assistant = 2 сообщения
@@ -672,18 +729,79 @@ final class AudioManager: NSObject, ObservableObject {
         }
 
         // ✅ ФОРМИРУЕМ MESSAGES: системный промпт + вся история
-        var messages: [[String: String]] = [
+        var messages: [[String: Any]] = [
             ["role": "system", "content": systemPrompt]
         ]
         messages.append(contentsOf: conversationHistory)
 
         print("📚 Conversation history: \(conversationHistory.count) messages (\(conversationHistory.count / 2) pairs)")
 
-        let body: [String: Any] = [
-            "model": "gpt-3.5-turbo",
+        // Spotify tools (only if authorized) - using new tools format for gpt-4o-mini
+        var tools: [[String: Any]] = []
+        if spotifyManager?.isAuthorized == true {
+            tools = [
+                [
+                    "type": "function",
+                    "function": [
+                        "name": "spotify_search_and_play",
+                        "description": "НЕМЕДЛЕННО включить музыку на Spotify. Используй когда пользователь говорит 'включи', 'поставь', 'играй' + название артиста/песни. НЕ спрашивай подтверждения - сразу вызывай эту функцию.",
+                        "parameters": [
+                            "type": "object",
+                            "properties": [
+                                "query": [
+                                    "type": "string",
+                                    "description": "Название артиста или песни (например: 'Моргенштерн', 'Imagine Dragons', 'Shape of You')"
+                                ]
+                            ],
+                            "required": ["query"]
+                        ]
+                    ]
+                ],
+                [
+                    "type": "function",
+                    "function": [
+                        "name": "spotify_play",
+                        "description": "Продолжить воспроизведение музыки на Spotify",
+                        "parameters": ["type": "object", "properties": [:]]
+                    ]
+                ],
+                [
+                    "type": "function",
+                    "function": [
+                        "name": "spotify_pause",
+                        "description": "Поставить музыку на паузу на Spotify",
+                        "parameters": ["type": "object", "properties": [:]]
+                    ]
+                ],
+                [
+                    "type": "function",
+                    "function": [
+                        "name": "spotify_next",
+                        "description": "Переключить на следующий трек на Spotify",
+                        "parameters": ["type": "object", "properties": [:]]
+                    ]
+                ],
+                [
+                    "type": "function",
+                    "function": [
+                        "name": "spotify_previous",
+                        "description": "Вернуться к предыдущему треку на Spotify",
+                        "parameters": ["type": "object", "properties": [:]]
+                    ]
+                ]
+            ]
+        }
+
+        var body: [String: Any] = [
+            "model": "gpt-4o-mini",  // Изменено с gpt-3.5-turbo - лучше работает с function calling
             "messages": messages,
             "max_tokens": 150
         ]
+
+        if !tools.isEmpty {
+            body["tools"] = tools
+            body["tool_choice"] = "auto"
+        }
 
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
@@ -692,6 +810,10 @@ final class AudioManager: NSObject, ObservableObject {
         req.httpBody = try? JSONSerialization.data(withJSONObject: body)
 
         print("📤 Sending to GPT...")
+        print("🔍 DEBUG - Request body keys: \(body.keys.sorted())")
+        print("🔍 DEBUG - Model: \(body["model"] as? String ?? "unknown")")
+        print("🔍 DEBUG - Has tools: \(!tools.isEmpty)")
+        print("🔍 DEBUG - Messages count: \((body["messages"] as? [Any])?.count ?? 0)")
         let startTime = Date()
 
         URLSession.shared.dataTask(with: req) { data, response, error in
@@ -718,8 +840,60 @@ final class AudioManager: NSObject, ObservableObject {
             }
 
             guard let choices = json["choices"] as? [[String: Any]],
-                  let msg = choices.first?["message"] as? [String: Any],
-                  let reply = msg["content"] as? String else {
+                  let msg = choices.first?["message"] as? [String: Any] else {
+                print("❌ No message in GPT response")
+                print("JSON: \(json)")
+                DispatchQueue.main.async {
+                    self.statusText = "❌ Нет ответа"
+                    self.isProcessing = false
+                }
+                return
+            }
+
+            // DEBUG: Print full GPT response to see what's happening
+            print("🔍 DEBUG - Full GPT message: \(msg)")
+            print("🔍 DEBUG - Has tool_calls: \(msg["tool_calls"] != nil)")
+            print("🔍 DEBUG - Content: \(msg["content"] as? String ?? "nil")")
+            if !tools.isEmpty {
+                print("🔍 DEBUG - Tools were sent: \(tools.count) tools")
+            } else {
+                print("🔍 DEBUG - No tools were sent in request")
+            }
+
+            // Check if GPT wants to call a tool (new format)
+            if let toolCalls = msg["tool_calls"] as? [[String: Any]],
+               let firstToolCall = toolCalls.first,
+               let function = firstToolCall["function"] as? [String: Any],
+               let functionName = function["name"] as? String,
+               let argumentsString = function["arguments"] as? String {
+
+                let toolCallId = firstToolCall["id"] as? String ?? "unknown"
+                print("🎵 GPT wants to call tool: \(functionName)")
+                print("📝 Tool call ID: \(toolCallId)")
+                print("📝 Arguments: \(argumentsString)")
+
+                // Execute Spotify function
+                self.executeSpotifyFunction(name: functionName, arguments: argumentsString) { result in
+                    // After function execution, ask GPT again with tool result (new format)
+                    self.conversationHistory.append([
+                        "role": "assistant",
+                        "tool_calls": toolCalls
+                    ] as [String : Any])
+                    self.conversationHistory.append([
+                        "role": "tool",
+                        "tool_call_id": toolCallId,
+                        "name": functionName,
+                        "content": result
+                    ])
+
+                    // Recursive call to get final response
+                    self.askGPT("")
+                }
+                return
+            }
+
+            // Normal text response
+            guard let reply = msg["content"] as? String else {
                 print("❌ No content in GPT response")
                 print("JSON: \(json)")
                 DispatchQueue.main.async {
@@ -755,6 +929,66 @@ final class AudioManager: NSObject, ObservableObject {
                 }
             }
         }.resume()
+    }
+
+    // MARK: - Spotify Function Execution
+    private func executeSpotifyFunction(name: String, arguments: String, completion: @escaping (String) -> Void) {
+        guard let spotify = spotifyManager else {
+            completion("{\"error\": \"Spotify not initialized\"}")
+            return
+        }
+
+        // Parse arguments JSON
+        guard let argsData = arguments.data(using: .utf8),
+              let args = try? JSONSerialization.jsonObject(with: argsData) as? [String: Any] else {
+            completion("{\"error\": \"Invalid arguments\"}")
+            return
+        }
+
+        print("🎵 Executing Spotify function: \(name)")
+
+        switch name {
+        case "spotify_search_and_play":
+            guard let query = args["query"] as? String else {
+                completion("{\"error\": \"Missing query parameter\"}")
+                return
+            }
+
+            spotify.searchAndPlay(query: query) { success, message in
+                if success {
+                    completion("{\"success\": true, \"message\": \"\(message)\"}")
+                } else {
+                    completion("{\"success\": false, \"message\": \"\(message)\"}")
+                }
+            }
+
+        case "spotify_play":
+            spotify.play { success in
+                let message = success ? "Музыка продолжена" : "Не удалось продолжить. Открой приложение Spotify и запусти песню, чтобы активировать устройство."
+                completion("{\"success\": \(success), \"message\": \"\(message)\"}")
+            }
+
+        case "spotify_pause":
+            spotify.pause { success in
+                let message = success ? "Музыка поставлена на паузу" : "Не удалось поставить на паузу. Убедись, что сейчас что-то играет в Spotify."
+                completion("{\"success\": \(success), \"message\": \"\(message)\"}")
+            }
+
+        case "spotify_next":
+            spotify.next { success in
+                let message = success ? "Переключаю на следующий трек" : "Не удалось переключить. Убедись, что Spotify активен на каком-то устройстве."
+                completion("{\"success\": \(success), \"message\": \"\(message)\"}")
+            }
+
+        case "spotify_previous":
+            spotify.previous { success in
+                let message = success ? "Возвращаюсь к предыдущему треку" : "Не удалось вернуться. Убедись, что Spotify активен на каком-то устройстве."
+                completion("{\"success\": \(success), \"message\": \"\(message)\"}")
+            }
+
+        default:
+            completion("{\"error\": \"Unknown function: \(name)\"}")
+        }
     }
 
     // MARK: TTS (оптимизировано для скорости)
@@ -831,10 +1065,12 @@ final class AudioManager: NSObject, ObservableObject {
         print("🔊 Starting playback...")
 
         do {
-            // Переключаемся на воспроизведение перед TTS
-            try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
-            try AVAudioSession.sharedInstance().setActive(true)
-            print("✅ Audio session configured for playback")
+            // Используем .playAndRecord с .duckOthers чтобы НЕ останавливать Spotify
+            // .duckOthers понижает громкость другого аудио (Spotify) вместо остановки
+            // .mixWithOthers позволяет играть одновременно с другими приложениями
+            try AVAudioSession.sharedInstance().setCategory(.playAndRecord, mode: .default, options: [.duckOthers, .defaultToSpeaker, .mixWithOthers])
+            try AVAudioSession.sharedInstance().setActive(true, options: .notifyOthersOnDeactivation)
+            print("✅ Audio session configured for TTS (ducking Spotify)")
 
             isSpeaking = true
             let p = try AVAudioPlayer(contentsOf: url)
@@ -860,6 +1096,16 @@ final class AudioManager: NSObject, ObservableObject {
                 print("✅ Playback finished")
                 print("========== END TTS ==========\n")
                 self.isSpeaking = false
+
+                // После TTS деактивируем аудио-сессию с уведомлением других приложений
+                // Это восстановит громкость Spotify
+                do {
+                    try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+                    print("🔊 Audio session deactivated, Spotify should resume normal volume")
+                } catch {
+                    print("⚠️ Could not deactivate audio session: \(error)")
+                }
+
                 completion?()
             }
         } catch {
