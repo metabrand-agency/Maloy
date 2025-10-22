@@ -6,7 +6,7 @@
 //
 //  SETUP INSTRUCTIONS:
 //  1. Copy this file and rename it to "Config.swift"
-//  2. Replace "YOUR_OPENAI_API_KEY_HERE" with your actual OpenAI API key
+//  2. Replace placeholder values with your actual keys
 //  3. Never commit Config.swift to git (it's in .gitignore)
 //
 
@@ -17,4 +17,10 @@ struct Config {
     /// Get your key from: https://platform.openai.com/api-keys
     /// Use a regular key (sk-... or sk-proj-...), NOT a service-account key
     static let openAIKey = "YOUR_OPENAI_API_KEY_HERE"
+
+    /// Spotify Credentials
+    /// Get from: https://developer.spotify.com/dashboard
+    static let spotifyClientID = "YOUR_SPOTIFY_CLIENT_ID_HERE"
+    static let spotifyClientSecret = "YOUR_SPOTIFY_CLIENT_SECRET_HERE"
+    static let spotifyRedirectURI = "maloy://callback"
 }

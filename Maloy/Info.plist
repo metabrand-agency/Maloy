@@ -5,6 +5,19 @@
 	<key>CFBundleIdentifier</key>
 	<string></string>
 	<key>NSMicrophoneUsageDescription</key>
-<string>App uses the microphone to recognize your voice.</string>
+	<string>App uses the microphone to recognize your voice.</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>CFBundleURLName</key>
+			<string>com.metabrand.maloy</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>maloy</string>
+			</array>
+		</dict>
+	</array>
 </dict>
 </plist>

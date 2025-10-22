@@ -90,22 +90,38 @@ struct ContentView: View {
             }
             .padding(.bottom, 20)
 
-            // Маленькая кнопка переключения режима
-            Button(action: {
-                audioManager.isAutoMode.toggle()
-                if audioManager.isAutoMode {
-                    audioManager.startListeningAuto()
-                } else {
-                    audioManager.interrupt()
+            // Маленькие кнопки управления
+            HStack(spacing: 15) {
+                // Кнопка переключения режима
+                Button(action: {
+                    audioManager.isAutoMode.toggle()
+                    if audioManager.isAutoMode {
+                        audioManager.startListeningAuto()
+                    } else {
+                        audioManager.interrupt()
+                    }
+                }) {
+                    Text(audioManager.isAutoMode ? "🤖 Авто" : "✋ Ручной")
+                        .font(.system(size: 16))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 20)
+                        .padding(.vertical, 10)
+                        .background(Color.orange)
+                        .cornerRadius(10)
                 }
-            }) {
-                Text(audioManager.isAutoMode ? "🤖 Авто режим" : "✋ Ручной режим")
-                    .font(.system(size: 16))
-                    .foregroundColor(.white)
-                    .padding(.horizontal, 20)
-                    .padding(.vertical, 10)
-                    .background(Color.orange)
-                    .cornerRadius(10)
+
+                // Кнопка очистки истории
+                Button(action: {
+                    audioManager.clearHistory()
+                }) {
+                    Text("🗑️ Новый разговор")
+                        .font(.system(size: 16))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 20)
+                        .padding(.vertical, 10)
+                        .background(Color.purple)
+                        .cornerRadius(10)
+                }
             }
             .padding(.bottom, 30)
         }
@@ -138,6 +154,10 @@ final class AudioManager: NSObject, ObservableObject {
     private var lastSpeechTime = Date()
     private let silenceThreshold: TimeInterval = 1.5  // 1.5 сек тишины → стоп
     private let speechThreshold: Float = -40.0  // дБ, выше которого считаем речью
+
+    // История разговора для контекста GPT
+    private var conversationHistory: [[String: String]] = []
+    private let maxHistoryPairs = 4  // Храним последние 4 пары вопрос-ответ (8 сообщений)
 
     // MARK: Приветствие
     func sayGreeting() {
@@ -265,6 +285,11 @@ final class AudioManager: NSObject, ObservableObject {
         }
 
         print("\n========== AUTO LISTENING (VAD) ==========")
+
+        // ✅ ОЧИЩАЕМ переменные перед новой записью (как в ручном режиме)
+        recognizedText = ""
+        responseText = ""
+
         statusText = "👂 Слушаю..."
         lastSpeechTime = Date()  // Сбрасываем таймер
 
@@ -361,7 +386,19 @@ final class AudioManager: NSObject, ObservableObject {
 
         print("🛑 Auto-stopping recording...")
         isListening = false
-        statusText = "⏳ Обработка..."
+
+        // МГНОВЕННАЯ РЕАКЦИЯ - говорим сразу после остановки записи!
+        let quickReactions = ["Ага", "Понял", "Так-так", "Ясно", "Окей", "Хм", "Секунду"]
+        let reaction = quickReactions.randomElement() ?? "Ага"
+
+        print("💬 Quick reaction (before transcription): \"\(reaction)\"")
+
+        // Говорим реакцию СРАЗУ, не ждём
+        say(reaction) {
+            DispatchQueue.main.async {
+                self.statusText = "🧠 Распознаю..."
+            }
+        }
 
         // Останавливаем движок
         audioEngine?.stop()
@@ -409,6 +446,24 @@ final class AudioManager: NSObject, ObservableObject {
         if isAutoMode {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
                 self.startListeningAuto()
+            }
+        }
+    }
+
+    // MARK: Очистка истории разговора
+    func clearHistory() {
+        conversationHistory.removeAll()
+        recognizedText = ""
+        responseText = ""
+        statusText = "🗑️ История очищена"
+        print("🗑️ Conversation history cleared")
+
+        // Через секунду возвращаемся в обычный статус
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+            if self.isAutoMode && !self.isListening && !self.isProcessing {
+                self.statusText = "👂 Слушаю..."
+            } else if !self.isListening && !self.isProcessing {
+                self.statusText = "💤 Жду команды"
             }
         }
     }
@@ -515,17 +570,58 @@ final class AudioManager: NSObject, ObservableObject {
 
             let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
             print("✅ Recognized: \"\(trimmedText)\"")
-            print("========== END WHISPER ==========\n")
 
-            if trimmedText.isEmpty {
-                print("⚠️ Empty recognition - nothing heard")
+            // ✅ ФИЛЬТРАЦИЯ МУСОРНЫХ РАСПОЗНАВАНИЙ (Whisper галлюцинации)
+            let junkPhrases = [
+                "тема животные и фрукты",
+                "спасибо за просмотр",
+                "подписывайтесь на канал",
+                "ставьте лайки",
+                "субтитры",
+                "продолжение следует",
+                "музыка",
+                "аплодисменты"
+            ]
+
+            let lowercased = trimmedText.lowercased()
+            let isJunk = junkPhrases.contains { lowercased.contains($0) }
+
+            if isJunk {
+                print("⚠️ JUNK detected - ignoring Whisper hallucination: \"\(trimmedText)\"")
+                DispatchQueue.main.async {
+                    self.statusText = "🤷 Не расслышал"
+                    self.isProcessing = false
+
+                    // В авто режиме → сразу продолжаем слушать
+                    if self.isAutoMode {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                            self.startListeningAuto()
+                        }
+                    }
+                }
+                print("========== END WHISPER ==========\n")
+                return
+            }
+
+            if trimmedText.isEmpty || trimmedText.count < 2 {
+                print("⚠️ Too short or empty - nothing heard")
                 DispatchQueue.main.async {
                     self.statusText = "🤷 Ничего не услышал"
                     self.recognizedText = "(пусто)"
                     self.isProcessing = false
+
+                    // В авто режиме → продолжаем слушать
+                    if self.isAutoMode {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                            self.startListeningAuto()
+                        }
+                    }
                 }
+                print("========== END WHISPER ==========\n")
                 return
             }
+
+            print("========== END WHISPER ==========\n")
 
             DispatchQueue.main.async {
                 self.recognizedText = trimmedText
@@ -534,7 +630,7 @@ final class AudioManager: NSObject, ObservableObject {
         }.resume()
     }
 
-    // MARK: GPT (оптимизировано для скорости)
+    // MARK: GPT (с историей разговора)
     private func askGPT(_ text: String) {
         guard !text.isEmpty else {
             print("⚠️ Empty text for GPT")
@@ -545,59 +641,48 @@ final class AudioManager: NSObject, ObservableObject {
             return
         }
 
-        // МГНОВЕННАЯ РЕАКЦИЯ - говорим короткую фразу пока GPT думает
-        let quickReactions = [
-            "Ага",
-            "Понял",
-            "Так-так",
-            "Ясно",
-            "Окей",
-            "Интересно",
-            "Хм",
-            "Секунду"
-        ]
-        let reaction = quickReactions.randomElement() ?? "Ага"
-
-        print("💬 Quick reaction: \"\(reaction)\"")
-
-        // Говорим реакцию БЕЗ ожидания окончания (параллельно запросу к GPT)
-        say(reaction) {
-            // После реакции показываем статус "думаю"
-            DispatchQueue.main.async {
-                self.statusText = "🤔 Думаю..."
-            }
+        // Реакция уже была сказана в stopListeningAuto()
+        // Сразу показываем статус "думаю"
+        DispatchQueue.main.async {
+            self.statusText = "🤔 Думаю..."
         }
 
         print("\n========== GPT API ==========")
         print("📝 User input: \"\(text)\"")
 
         let url = URL(string: "https://api.openai.com/v1/chat/completions")!
+
+        // ✅ СОКРАЩЕННЫЙ ПРОМПТ (экономия токенов, быстрее обработка)
         let systemPrompt = """
-        Ты голосовой ассистент по имени Малой. Ты умный, современный и общаешься на равных.
-        Разговариваешь с Фёдором — ему 15 лет, он учится в 8 классе. Он незрячий.
-
-        Твой стиль:
-        - Разговаривай как со сверстником, без сюсюканья и упрощений
-        - Используй современный сленг, мемы, отсылки к популярной культуре
-        - Можешь шутить, быть ироничным, говорить прямо
-        - При описании предметов используй тактильные ощущения: форму, размер, текстуру, вес
-
-        Правила:
-        - Отвечай коротко и по делу (2-4 предложения обычно)
-        - Если тема сложная — объясняй просто, но не как маленькому
-        - Можешь использовать английские слова и термины (это норм для подростков)
-        - Если просят почитать книгу — читай по 3-4 предложения за раз
-
-        Говори по-русски, но не стесняйся вставлять английские слова и фразы где уместно.
+        Ты Малой — голосовой помощник. Говоришь с Фёдором (15 лет, незрячий, 8 класс).
+        Стиль: на равных, без сюсюканья, современный сленг OK, можно шутить.
+        Описывая предметы → упоминай форму, размер, текстуру (он незрячий).
+        Отвечай кратко (2-4 фразы). Английские слова можно.
         """
 
+        // ✅ ДОБАВЛЯЕМ ТЕКУЩИЙ ВОПРОС В ИСТОРИЮ
+        conversationHistory.append(["role": "user", "content": text])
+
+        // ✅ СКОЛЬЗЯЩЕЕ ОКНО: удаляем старые пары, если история слишком длинная
+        // Каждая пара = user + assistant = 2 сообщения
+        // Храним maxHistoryPairs * 2 = 8 сообщений (4 пары)
+        while conversationHistory.count > maxHistoryPairs * 2 {
+            conversationHistory.removeFirst(2)  // Удаляем старейшую пару (user + assistant)
+            print("🗑️ Removed oldest conversation pair (sliding window)")
+        }
+
+        // ✅ ФОРМИРУЕМ MESSAGES: системный промпт + вся история
+        var messages: [[String: String]] = [
+            ["role": "system", "content": systemPrompt]
+        ]
+        messages.append(contentsOf: conversationHistory)
+
+        print("📚 Conversation history: \(conversationHistory.count) messages (\(conversationHistory.count / 2) pairs)")
+
         let body: [String: Any] = [
-            "model": "gpt-3.5-turbo",  // Переключились с gpt-4o-mini на gpt-3.5-turbo (быстрее в 3-4 раза!)
-            "messages": [
-                ["role": "system", "content": systemPrompt],
-                ["role": "user", "content": text]
-            ],
-            "max_tokens": 150  // Увеличили с 80 до 150, чтобы не обрубало слова
+            "model": "gpt-3.5-turbo",
+            "messages": messages,
+            "max_tokens": 150
         ]
 
         var req = URLRequest(url: url)
@@ -645,6 +730,10 @@ final class AudioManager: NSObject, ObservableObject {
             }
 
             print("✅ GPT reply: \"\(reply)\"")
+
+            // ✅ ДОБАВЛЯЕМ ОТВЕТ GPT В ИСТОРИЮ
+            self.conversationHistory.append(["role": "assistant", "content": reply])
+            print("📚 Added assistant response to history (now \(self.conversationHistory.count) messages)")
             print("========== END GPT ==========\n")
 
             // МОМЕНТАЛЬНО показываем текст ответа пользователю
