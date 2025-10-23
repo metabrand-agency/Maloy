@@ -6,6 +6,10 @@
 	<string></string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>App uses the microphone to recognize your voice.</string>
+	<key>NSAppleMusicUsageDescription</key>
+	<string>App uses Apple Music to play songs you request by voice.</string>
+	<key>NSAppleMediaLibraryUsageDescription</key>
+	<string>App needs access to your music library to play songs by voice.</string>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>

@@ -1,4 +1,4 @@
-//
+    //
 //  SpotifyManager.swift
 //  Maloy
 //

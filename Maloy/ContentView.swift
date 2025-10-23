@@ -4,7 +4,7 @@ import Combine
 
 struct ContentView: View {
     @StateObject private var audioManager = AudioManager()
-    @EnvironmentObject var spotifyManager: SpotifyManager
+    @EnvironmentObject var mediaPlayerManager: MediaPlayerManager
 
     // Helper функции для кнопки
     private func getButtonText() -> String {
@@ -49,27 +49,19 @@ struct ContentView: View {
 
     var body: some View {
         VStack(spacing: 30) {
-            // Spotify authorization button (top right corner)
+            // Apple Music status indicator (top right corner)
             HStack {
                 Spacer()
-                if !spotifyManager.isAuthorized {
-                    Button(action: {
-                        if let url = spotifyManager.getAuthorizationURL() {
-                            UIApplication.shared.open(url)
-                        }
-                    }) {
-                        Text("🎵 Подключить Spotify")
-                            .font(.system(size: 14))
-                            .foregroundColor(.white)
-                            .padding(.horizontal, 15)
-                            .padding(.vertical, 8)
-                            .background(Color.green)
-                            .cornerRadius(8)
-                    }
-                } else {
-                    Text("✅ Spotify")
+                if mediaPlayerManager.isAuthorized {
+                    Text("✅ Apple Music")
                         .font(.system(size: 14))
                         .foregroundColor(.green)
+                        .padding(.horizontal, 15)
+                        .padding(.vertical, 8)
+                } else {
+                    Text("⚠️ Нужен Apple Music")
+                        .font(.system(size: 14))
+                        .foregroundColor(.orange)
                         .padding(.horizontal, 15)
                         .padding(.vertical, 8)
                 }
@@ -155,7 +147,7 @@ struct ContentView: View {
         }
         .padding()
         .onAppear {
-            audioManager.spotifyManager = spotifyManager
+            audioManager.mediaPlayerManager = mediaPlayerManager
             audioManager.sayGreeting()
         }
     }
@@ -174,8 +166,8 @@ final class AudioManager: NSObject, ObservableObject {
     // API key is stored in Config.swift (not tracked in git for security)
     private let openAIKey = Config.openAIKey
 
-    // Spotify manager (passed from ContentView)
-    var spotifyManager: SpotifyManager?
+    // MediaPlayer manager (passed from ContentView)
+    var mediaPlayerManager: MediaPlayerManager?
 
     private let audioFilename = FileManager.default.temporaryDirectory.appendingPathComponent("input.wav")
     private var audioEngine: AVAudioEngine?
@@ -698,20 +690,23 @@ final class AudioManager: NSObject, ObservableObject {
         Отвечай кратко (2-4 фразы). Английские слова можно.
         """
 
-        if spotifyManager?.isAuthorized == true {
+        if mediaPlayerManager?.isAuthorized == true {
             systemPrompt += """
 
-            ВАЖНО: У тебя есть Spotify функции. Когда пользователь просит включить музыку - СРАЗУ вызывай функцию, НЕ спрашивай подтверждения.
+            ВАЖНО: У тебя есть Apple Music функции. Когда пользователь просит включить музыку - СРАЗУ вызывай функцию, НЕ спрашивай подтверждения.
             Примеры:
-            - "Включи Моргенштерна" → вызови spotify_search_and_play("Моргенштерн")
-            - "Поставь на паузу" / "Стоп" / "Останови" → вызови spotify_pause
-            - "Следующий трек" / "Дальше" / "Некст" → вызови spotify_next
-            - "Продолжи" / "Играй" → вызови spotify_play
+            - "Включи Моргенштерна" → вызови music_search_and_play("Моргенштерн")
+            - "Поставь на паузу" / "Стоп" / "Останови" → вызови music_pause
+            - "Следующий трек" / "Дальше" / "Некст" → вызови music_next
+            - "Продолжи" / "Играй" → вызови music_play
 
-            ОЧЕНЬ ВАЖНО: Слова "стоп", "останови", "хватит", "выключи музыку" → ВСЕГДА вызывай spotify_pause!
+            ОЧЕНЬ ВАЖНО: Слова "стоп", "останови", "хватит", "выключи музыку" → ВСЕГДА вызывай music_pause!
 
-            Когда включаешь музыку - отвечай МАКСИМАЛЬНО КРАТКО (1 фраза), чтобы не заглушать песню долгой речью.
-            Примеры хороших ответов: "Лови!", "Играет!", "Включаю!", "Готово!"
+            Когда включаешь музыку - отвечай ТОЛЬКО названием артиста и трека. НЕ добавляй ничего лишнего.
+            Примеры правильных ответов:
+            - Если включил Моргенштерна "Cadillac" → скажи только "Моргенштерн, Кадиллак"
+            - Если включил Coldplay "Yellow" → скажи только "Колдплей, Йеллоу"
+            - НИКОГДА не говори "Включаю", "Лови", "Играет" - ТОЛЬКО название!
             """
         }
 
@@ -736,15 +731,15 @@ final class AudioManager: NSObject, ObservableObject {
 
         print("📚 Conversation history: \(conversationHistory.count) messages (\(conversationHistory.count / 2) pairs)")
 
-        // Spotify tools (only if authorized) - using new tools format for gpt-4o-mini
+        // Music tools (only if authorized) - using new tools format for gpt-4o-mini
         var tools: [[String: Any]] = []
-        if spotifyManager?.isAuthorized == true {
+        if mediaPlayerManager?.isAuthorized == true {
             tools = [
                 [
                     "type": "function",
                     "function": [
-                        "name": "spotify_search_and_play",
-                        "description": "НЕМЕДЛЕННО включить музыку на Spotify. Используй когда пользователь говорит 'включи', 'поставь', 'играй' + название артиста/песни. НЕ спрашивай подтверждения - сразу вызывай эту функцию.",
+                        "name": "music_search_and_play",
+                        "description": "НЕМЕДЛЕННО включить музыку из Apple Music. Используй когда пользователь говорит 'включи', 'поставь', 'играй' + название артиста/песни. НЕ спрашивай подтверждения - сразу вызывай эту функцию.",
                         "parameters": [
                             "type": "object",
                             "properties": [
@@ -760,32 +755,32 @@ final class AudioManager: NSObject, ObservableObject {
                 [
                     "type": "function",
                     "function": [
-                        "name": "spotify_play",
-                        "description": "Продолжить воспроизведение музыки на Spotify",
+                        "name": "music_play",
+                        "description": "Продолжить воспроизведение музыки",
                         "parameters": ["type": "object", "properties": [:]]
                     ]
                 ],
                 [
                     "type": "function",
                     "function": [
-                        "name": "spotify_pause",
-                        "description": "Поставить музыку на паузу на Spotify",
+                        "name": "music_pause",
+                        "description": "Поставить музыку на паузу или остановить",
                         "parameters": ["type": "object", "properties": [:]]
                     ]
                 ],
                 [
                     "type": "function",
                     "function": [
-                        "name": "spotify_next",
-                        "description": "Переключить на следующий трек на Spotify",
+                        "name": "music_next",
+                        "description": "Переключить на следующий трек",
                         "parameters": ["type": "object", "properties": [:]]
                     ]
                 ],
                 [
                     "type": "function",
                     "function": [
-                        "name": "spotify_previous",
-                        "description": "Вернуться к предыдущему треку на Spotify",
+                        "name": "music_previous",
+                        "description": "Вернуться к предыдущему треку",
                         "parameters": ["type": "object", "properties": [:]]
                     ]
                 ]
@@ -872,8 +867,8 @@ final class AudioManager: NSObject, ObservableObject {
                 print("📝 Tool call ID: \(toolCallId)")
                 print("📝 Arguments: \(argumentsString)")
 
-                // Execute Spotify function
-                self.executeSpotifyFunction(name: functionName, arguments: argumentsString) { result in
+                // Execute Music function
+                self.executeMusicFunction(name: functionName, arguments: argumentsString) { result in
                     // After function execution, ask GPT again with tool result (new format)
                     self.conversationHistory.append([
                         "role": "assistant",
@@ -931,10 +926,10 @@ final class AudioManager: NSObject, ObservableObject {
         }.resume()
     }
 
-    // MARK: - Spotify Function Execution
-    private func executeSpotifyFunction(name: String, arguments: String, completion: @escaping (String) -> Void) {
-        guard let spotify = spotifyManager else {
-            completion("{\"error\": \"Spotify not initialized\"}")
+    // MARK: - Music Function Execution
+    private func executeMusicFunction(name: String, arguments: String, completion: @escaping (String) -> Void) {
+        guard let music = mediaPlayerManager else {
+            completion("{\"error\": \"MusicKit not initialized\"}")
             return
         }
 
@@ -945,16 +940,16 @@ final class AudioManager: NSObject, ObservableObject {
             return
         }
 
-        print("🎵 Executing Spotify function: \(name)")
+        print("🎵 Executing Music function: \(name)")
 
         switch name {
-        case "spotify_search_and_play":
+        case "music_search_and_play":
             guard let query = args["query"] as? String else {
                 completion("{\"error\": \"Missing query parameter\"}")
                 return
             }
 
-            spotify.searchAndPlay(query: query) { success, message in
+            music.searchAndPlay(query: query) { success, message in
                 if success {
                     completion("{\"success\": true, \"message\": \"\(message)\"}")
                 } else {
@@ -962,27 +957,23 @@ final class AudioManager: NSObject, ObservableObject {
                 }
             }
 
-        case "spotify_play":
-            spotify.play { success in
-                let message = success ? "Музыка продолжена" : "Не удалось продолжить. Открой приложение Spotify и запусти песню, чтобы активировать устройство."
+        case "music_play":
+            music.play { success, message in
                 completion("{\"success\": \(success), \"message\": \"\(message)\"}")
             }
 
-        case "spotify_pause":
-            spotify.pause { success in
-                let message = success ? "Музыка поставлена на паузу" : "Не удалось поставить на паузу. Убедись, что сейчас что-то играет в Spotify."
+        case "music_pause":
+            music.pause { success, message in
                 completion("{\"success\": \(success), \"message\": \"\(message)\"}")
             }
 
-        case "spotify_next":
-            spotify.next { success in
-                let message = success ? "Переключаю на следующий трек" : "Не удалось переключить. Убедись, что Spotify активен на каком-то устройстве."
+        case "music_next":
+            music.next { success, message in
                 completion("{\"success\": \(success), \"message\": \"\(message)\"}")
             }
 
-        case "spotify_previous":
-            spotify.previous { success in
-                let message = success ? "Возвращаюсь к предыдущему треку" : "Не удалось вернуться. Убедись, что Spotify активен на каком-то устройстве."
+        case "music_previous":
+            music.previous { success, message in
                 completion("{\"success\": \(success), \"message\": \"\(message)\"}")
             }
 
