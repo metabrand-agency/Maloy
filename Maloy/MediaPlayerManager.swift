@@ -93,50 +93,42 @@ class MediaPlayerManager: ObservableObject {
         DispatchQueue.global(qos: .userInitiated).async {
             print("🔍 Searching local library: \"\(query)\"")
 
-            do {
-                // Search for songs by artist
-                let artistPredicate = MPMediaPropertyPredicate(value: query,
-                                                               forProperty: MPMediaItemPropertyArtist,
-                                                               comparisonType: .contains)
+            // Search for songs by artist
+            let artistPredicate = MPMediaPropertyPredicate(value: query,
+                                                           forProperty: MPMediaItemPropertyArtist,
+                                                           comparisonType: .contains)
 
-                let artistQuery = MPMediaQuery.songs()
-                artistQuery.addFilterPredicate(artistPredicate)
+            let artistQuery = MPMediaQuery.songs()
+            artistQuery.addFilterPredicate(artistPredicate)
 
-                if let items = artistQuery.items, !items.isEmpty {
-                    print("✅ Found \(items.count) songs by artist")
-                    DispatchQueue.main.async {
-                        self.playItems(items, completion: completion)
-                    }
-                    return
-                }
-
-                // Try searching by song title if artist search failed
-                print("🔍 Artist not found, trying song title...")
-                let titlePredicate = MPMediaPropertyPredicate(value: query,
-                                                              forProperty: MPMediaItemPropertyTitle,
-                                                              comparisonType: .contains)
-                let titleQuery = MPMediaQuery.songs()
-                titleQuery.addFilterPredicate(titlePredicate)
-
-                if let titleItems = titleQuery.items, !titleItems.isEmpty {
-                    print("✅ Found \(titleItems.count) songs by title")
-                    DispatchQueue.main.async {
-                        self.playItems(titleItems, completion: completion)
-                    }
-                    return
-                }
-
-                // Nothing found
-                print("❌ No songs found in library for: \(query)")
+            if let items = artistQuery.items, !items.isEmpty {
+                print("✅ Found \(items.count) songs by artist")
                 DispatchQueue.main.async {
-                    completion(false, "Не нашёл '\(query)' в твоей музыкальной библиотеке. Добавь эту музыку в Apple Music сначала.")
+                    self.playItems(items, completion: completion)
                 }
+                return
+            }
 
-            } catch {
-                print("❌ Search error: \(error)")
+            // Try searching by song title if artist search failed
+            print("🔍 Artist not found, trying song title...")
+            let titlePredicate = MPMediaPropertyPredicate(value: query,
+                                                          forProperty: MPMediaItemPropertyTitle,
+                                                          comparisonType: .contains)
+            let titleQuery = MPMediaQuery.songs()
+            titleQuery.addFilterPredicate(titlePredicate)
+
+            if let titleItems = titleQuery.items, !titleItems.isEmpty {
+                print("✅ Found \(titleItems.count) songs by title")
                 DispatchQueue.main.async {
-                    completion(false, "Ошибка поиска музыки")
+                    self.playItems(titleItems, completion: completion)
                 }
+                return
+            }
+
+            // Nothing found
+            print("❌ No songs found in library for: \(query)")
+            DispatchQueue.main.async {
+                completion(false, "Не нашёл '\(query)' в твоей музыкальной библиотеке. Добавь эту музыку в Apple Music сначала.")
             }
         }
     }
@@ -151,24 +143,18 @@ class MediaPlayerManager: ObservableObject {
         let artistName = firstItem.artist ?? "Unknown Artist"
         print("✅ Found: \(songTitle) - \(artistName)")
 
-        do {
-            // Stop current playback first
-            player.stop()
+        // Stop current playback first
+        player.stop()
 
-            // Create collection and play
-            let collection = MPMediaItemCollection(items: items)
-            player.setQueue(with: collection)
-            player.prepareToPlay()
-            player.play()
+        // Create collection and play
+        let collection = MPMediaItemCollection(items: items)
+        player.setQueue(with: collection)
+        player.prepareToPlay()
+        player.play()
 
-            currentSong = "\(songTitle) - \(artistName)"
-            print("🎵 Now playing: \(currentSong ?? "")")
-            completion(true, "\(artistName), \(songTitle)")
-
-        } catch {
-            print("❌ Playback error: \(error)")
-            completion(false, "Ошибка воспроизведения")
-        }
+        currentSong = "\(songTitle) - \(artistName)"
+        print("🎵 Now playing: \(currentSong ?? "")")
+        completion(true, "\(artistName), \(songTitle)")
     }
 
     /// Play/Resume playback
@@ -186,24 +172,34 @@ class MediaPlayerManager: ObservableObject {
     /// Skip to next track
     func next(completion: @escaping (Bool, String) -> Void) {
         player.skipToNextItem()
-        if let nowPlaying = player.nowPlayingItem {
-            let title = nowPlaying.title ?? "Unknown"
-            let artist = nowPlaying.artist ?? "Unknown"
-            completion(true, "\(artist), \(title)")
-        } else {
-            completion(true, "Следующий трек")
+        player.play()  // Важно: запускаем воспроизведение после переключения
+
+        // Небольшая задержка чтобы дать плееру обновиться
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            if let nowPlaying = self.player.nowPlayingItem {
+                let title = nowPlaying.title ?? "Unknown"
+                let artist = nowPlaying.artist ?? "Unknown"
+                completion(true, "\(artist), \(title)")
+            } else {
+                completion(true, "Следующий трек")
+            }
         }
     }
 
     /// Skip to previous track
     func previous(completion: @escaping (Bool, String) -> Void) {
         player.skipToPreviousItem()
-        if let nowPlaying = player.nowPlayingItem {
-            let title = nowPlaying.title ?? "Unknown"
-            let artist = nowPlaying.artist ?? "Unknown"
-            completion(true, "\(artist), \(title)")
-        } else {
-            completion(true, "Предыдущий трек")
+        player.play()  // Важно: запускаем воспроизведение после переключения
+
+        // Небольшая задержка чтобы дать плееру обновиться
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            if let nowPlaying = self.player.nowPlayingItem {
+                let title = nowPlaying.title ?? "Unknown"
+                let artist = nowPlaying.artist ?? "Unknown"
+                completion(true, "\(artist), \(title)")
+            } else {
+                completion(true, "Предыдущий трек")
+            }
         }
     }
 
