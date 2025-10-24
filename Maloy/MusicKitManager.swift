@@ -68,15 +68,22 @@ class MusicKitManager: ObservableObject {
 
         Task {
             do {
+                // Check subscription status
+                let subscription = try await MusicSubscription.current
+                print("📱 Subscription canPlayCatalogContent: \(subscription.canPlayCatalogContent)")
+                print("📱 Subscription canBecomeSubscriber: \(subscription.canBecomeSubscriber)")
+
                 // Search for songs
                 var request = MusicCatalogSearchRequest(term: query, types: [Song.self])
-                request.limit = 1
+                request.limit = 10  // Увеличиваем лимит для отладки
 
+                print("🔍 Sending request to MusicKit...")
                 let response = try await request.response()
+                print("✅ Response received. Songs count: \(response.songs.count)")
 
                 guard let song = response.songs.first else {
                     await MainActor.run {
-                        completion(false, "Не нашёл песню '\(query)' в Apple Music")
+                        completion(false, "Не нашёл песню '\(query)' в Apple Music. Проверь подписку.")
                     }
                     return
                 }
@@ -96,6 +103,8 @@ class MusicKitManager: ObservableObject {
 
             } catch {
                 print("❌ MusicKit search error: \(error)")
+                print("❌ Error type: \(type(of: error))")
+                print("❌ Error details: \(String(describing: error))")
                 await MainActor.run {
                     completion(false, "Ошибка поиска: \(error.localizedDescription)")
                 }
