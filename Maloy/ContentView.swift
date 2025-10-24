@@ -147,8 +147,24 @@ struct ContentView: View {
         }
         .padding()
         .onAppear {
+            // КРИТИЧЕСКИ ВАЖНО: устанавливаем musicKitManager ПЕРЕД любыми действиями
             audioManager.musicKitManager = musicKitManager
-            audioManager.sayGreeting()
+
+            // Ждем пока MusicKit authorization завершится (может быть асинхронной)
+            // Проверяем каждые 0.2 секунды, максимум 10 попыток (2 секунды)
+            var attempts = 0
+            func waitForMusicKit() {
+                attempts += 1
+                if musicKitManager.isAuthorized || attempts >= 10 {
+                    print("🎵 MusicKit ready after \(attempts) attempts, isAuthorized: \(musicKitManager.isAuthorized)")
+                    audioManager.sayGreeting()
+                } else {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                        waitForMusicKit()
+                    }
+                }
+            }
+            waitForMusicKit()
         }
     }
 }
@@ -947,19 +963,23 @@ final class AudioManager: NSObject, ObservableObject {
 
     // MARK: - Music Function Execution
     private func executeMusicFunction(name: String, arguments: String, completion: @escaping (String) -> Void) {
+        print("🎵 executeMusicFunction: \(name)")
+
         guard let music = musicKitManager else {
-            completion("{\"error\": \"MusicKit not initialized\"}")
+            print("❌ MusicKit not initialized!")
+            completion("{\"success\": false, \"message\": \"Музыка недоступна\"}")
             return
         }
 
         // Parse arguments JSON
         guard let argsData = arguments.data(using: .utf8),
               let args = try? JSONSerialization.jsonObject(with: argsData) as? [String: Any] else {
-            completion("{\"error\": \"Invalid arguments\"}")
+            print("❌ Invalid arguments JSON!")
+            completion("{\"success\": false, \"message\": \"Ошибка обработки команды\"}")
             return
         }
 
-        print("🎵 Executing Music function: \(name)")
+        print("🎵 Executing: \(name)")
 
         // Устанавливаем флаг для команд воспроизведения (кроме паузы)
         if name == "music_search_and_play" || name == "music_play" || name == "music_next" || name == "music_previous" {
