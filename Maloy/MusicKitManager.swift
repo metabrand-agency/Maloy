@@ -104,58 +104,43 @@ class MusicKitManager: ObservableObject {
     }
 
     /// Play/Resume playback
-    func play(completion: @escaping (Bool, String) -> Void) {
+    func play() {
         Task {
             do {
                 try await player.play()
-                await MainActor.run {
-                    completion(true, "Продолжаю")
-                }
+                print("▶️ Resumed playback")
             } catch {
                 print("❌ Play error: \(error)")
-                await MainActor.run {
-                    completion(false, "Не удалось продолжить")
-                }
             }
         }
     }
 
     /// Pause playback
-    func pause(completion: @escaping (Bool, String) -> Void) {
+    func pause() {
         player.pause()
-        completion(true, "Пауза")
+        print("⏸️ Paused playback")
     }
 
     /// Skip to next track
-    func next(completion: @escaping (Bool, String) -> Void) {
+    func next() {
         Task {
             do {
                 try await player.skipToNextEntry()
-                await MainActor.run {
-                    completion(true, "Следующий трек")
-                }
+                print("⏭️ Skipped to next track")
             } catch {
                 print("❌ Skip next error: \(error)")
-                await MainActor.run {
-                    completion(false, "Не удалось переключить")
-                }
             }
         }
     }
 
     /// Skip to previous track
-    func previous(completion: @escaping (Bool, String) -> Void) {
+    func previous() {
         Task {
             do {
                 try await player.skipToPreviousEntry()
-                await MainActor.run {
-                    completion(true, "Предыдущий трек")
-                }
+                print("⏮️ Skipped to previous track")
             } catch {
                 print("❌ Skip previous error: \(error)")
-                await MainActor.run {
-                    completion(false, "Не удалось вернуться")
-                }
             }
         }
     }
