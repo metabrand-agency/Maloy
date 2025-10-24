@@ -194,8 +194,8 @@ final class AudioManager: NSObject, ObservableObject {
     // VAD (Voice Activity Detection) параметры
     private var silenceTimer: Timer?
     private var lastSpeechTime = Date()
-    private let silenceThreshold: TimeInterval = 1.5  // 1.5 сек тишины → стоп
-    private let speechThreshold: Float = -40.0  // дБ, выше которого считаем речью
+    private let silenceThreshold: TimeInterval = 2.0  // 2 сек тишины → стоп (увеличено для надежности)
+    private let speechThreshold: Float = -35.0  // дБ, выше которого считаем речью (баланс между чувствительностью и шумом)
 
     // История разговора для контекста GPT
     private var conversationHistory: [[String: Any]] = []
@@ -238,7 +238,7 @@ final class AudioManager: NSObject, ObservableObject {
 
         // Переключаемся на запись - используем .playAndRecord чтобы НЕ убивать Spotify
         do {
-            try AVAudioSession.sharedInstance().setCategory(.playAndRecord, mode: .default, options: [.allowBluetoothHFP, .duckOthers, .mixWithOthers, .defaultToSpeaker])
+            try AVAudioSession.sharedInstance().setCategory(.playAndRecord, mode: .default, options: [.allowBluetooth, .allowBluetoothA2DP, .duckOthers, .mixWithOthers])
             try AVAudioSession.sharedInstance().setActive(true, options: .notifyOthersOnDeactivation)
             print("✅ Audio session configured for recording (Spotify compatible)")
         } catch {
@@ -343,7 +343,7 @@ final class AudioManager: NSObject, ObservableObject {
         // Переключаемся на запись - используем .playAndRecord чтобы НЕ убивать Spotify
         // .mixWithOthers позволяет Spotify играть в фоне
         do {
-            try AVAudioSession.sharedInstance().setCategory(.playAndRecord, mode: .default, options: [.allowBluetoothHFP, .duckOthers, .mixWithOthers, .defaultToSpeaker])
+            try AVAudioSession.sharedInstance().setCategory(.playAndRecord, mode: .default, options: [.allowBluetooth, .allowBluetoothA2DP, .duckOthers, .mixWithOthers])
             try AVAudioSession.sharedInstance().setActive(true, options: .notifyOthersOnDeactivation)
             print("✅ Audio session configured for VAD recording (Spotify compatible)")
         } catch {
@@ -1096,12 +1096,11 @@ final class AudioManager: NSObject, ObservableObject {
         print("🔊 Starting playback...")
 
         do {
-            // Используем .playAndRecord с .duckOthers чтобы НЕ останавливать Spotify
-            // .duckOthers понижает громкость другого аудио (Spotify) вместо остановки
-            // .mixWithOthers позволяет играть одновременно с другими приложениями
-            try AVAudioSession.sharedInstance().setCategory(.playAndRecord, mode: .default, options: [.duckOthers, .defaultToSpeaker, .mixWithOthers])
+            // Для TTS используем .playback чтобы звук был громким
+            // Переключаемся на режим воспроизведения, временно останавливая другие приложения
+            try AVAudioSession.sharedInstance().setCategory(.playback, mode: .spokenAudio, options: [])
             try AVAudioSession.sharedInstance().setActive(true, options: .notifyOthersOnDeactivation)
-            print("✅ Audio session configured for TTS (ducking Spotify)")
+            print("✅ Audio session configured for TTS playback")
 
             isSpeaking = true
             let p = try AVAudioPlayer(contentsOf: url)
