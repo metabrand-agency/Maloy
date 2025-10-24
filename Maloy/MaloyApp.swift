@@ -9,12 +9,12 @@ import SwiftUI
 
 @main
 struct MaloyApp: App {
-    @StateObject private var mediaPlayerManager = MediaPlayerManager()
+    @StateObject private var musicKitManager = MusicKitManager()
 
     var body: some Scene {
         WindowGroup {
             ContentView()
-                .environmentObject(mediaPlayerManager)
+                .environmentObject(musicKitManager)
         }
     }
 }

@@ -4,7 +4,7 @@ import Combine
 
 struct ContentView: View {
     @StateObject private var audioManager = AudioManager()
-    @EnvironmentObject var mediaPlayerManager: MediaPlayerManager
+    @EnvironmentObject var musicKitManager: MusicKitManager
 
     // Helper функции для кнопки
     private func getButtonText() -> String {
@@ -52,7 +52,7 @@ struct ContentView: View {
             // Apple Music status indicator (top right corner)
             HStack {
                 Spacer()
-                if mediaPlayerManager.isAuthorized {
+                if musicKitManager.isAuthorized {
                     Text("✅ Apple Music")
                         .font(.system(size: 14))
                         .foregroundColor(.green)
@@ -147,7 +147,7 @@ struct ContentView: View {
         }
         .padding()
         .onAppear {
-            audioManager.mediaPlayerManager = mediaPlayerManager
+            audioManager.musicKitManager = musicKitManager
             audioManager.sayGreeting()
         }
     }
@@ -166,8 +166,8 @@ final class AudioManager: NSObject, ObservableObject {
     // API key is stored in Config.swift (not tracked in git for security)
     private let openAIKey = Config.openAIKey
 
-    // MediaPlayer manager (passed from ContentView)
-    var mediaPlayerManager: MediaPlayerManager?
+    // MusicKit manager (passed from ContentView)
+    var musicKitManager: MusicKitManager?
 
     private let audioFilename = FileManager.default.temporaryDirectory.appendingPathComponent("input.wav")
     private var audioEngine: AVAudioEngine?
@@ -472,7 +472,7 @@ final class AudioManager: NSObject, ObservableObject {
         isSpeaking = false
 
         // Останавливаем музыку
-        mediaPlayerManager?.stop()
+        musicKitManager?.stop()
 
         isProcessing = false
         statusText = "🛑 Прервано"
@@ -698,7 +698,7 @@ final class AudioManager: NSObject, ObservableObject {
         Отвечай кратко (2-4 фразы). Английские слова можно.
         """
 
-        if mediaPlayerManager?.isAuthorized == true {
+        if musicKitManager?.isAuthorized == true {
             systemPrompt += """
 
             ВАЖНО: У тебя есть Apple Music функции. Когда пользователь просит включить музыку - СРАЗУ вызывай функцию, НЕ спрашивай подтверждения.
@@ -749,7 +749,7 @@ final class AudioManager: NSObject, ObservableObject {
 
         // Music tools (only if authorized) - using new tools format for gpt-4o-mini
         var tools: [[String: Any]] = []
-        if mediaPlayerManager?.isAuthorized == true {
+        if musicKitManager?.isAuthorized == true {
             tools = [
                 [
                     "type": "function",
@@ -947,7 +947,7 @@ final class AudioManager: NSObject, ObservableObject {
 
     // MARK: - Music Function Execution
     private func executeMusicFunction(name: String, arguments: String, completion: @escaping (String) -> Void) {
-        guard let music = mediaPlayerManager else {
+        guard let music = musicKitManager else {
             completion("{\"error\": \"MusicKit not initialized\"}")
             return
         }
@@ -982,24 +982,20 @@ final class AudioManager: NSObject, ObservableObject {
             }
 
         case "music_play":
-            music.play { success, message in
-                completion("{\"success\": \(success), \"message\": \"\(message)\"}")
-            }
+            music.play()
+            completion("{\"success\": true, \"message\": \"Продолжаю\"}")
 
         case "music_pause":
-            music.pause { success, message in
-                completion("{\"success\": \(success), \"message\": \"\(message)\"}")
-            }
+            music.pause()
+            completion("{\"success\": true, \"message\": \"Пауза\"}")
 
         case "music_next":
-            music.next { success, message in
-                completion("{\"success\": \(success), \"message\": \"\(message)\"}")
-            }
+            music.next()
+            completion("{\"success\": true, \"message\": \"Следующий трек\"}")
 
         case "music_previous":
-            music.previous { success, message in
-                completion("{\"success\": \(success), \"message\": \"\(message)\"}")
-            }
+            music.previous()
+            completion("{\"success\": true, \"message\": \"Предыдущий трек\"}")
 
         default:
             completion("{\"error\": \"Unknown function: \(name)\"}")
