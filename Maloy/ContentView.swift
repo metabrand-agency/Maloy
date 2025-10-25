@@ -1,10 +1,27 @@
 import SwiftUI
 import AVFoundation
 import Combine
+import AudioToolbox
 
 struct ContentView: View {
     @StateObject private var audioManager = AudioManager()
     @EnvironmentObject var musicKitManager: MusicKitManager
+
+    // Функция для воспроизведения звука тапа
+    private func playTapSound(high: Bool) {
+        // Используем вибрацию так как SystemSounds могут не работать из-за AVAudioSession
+        if high {
+            // Средняя вибрация для верхней кнопки (усилена!)
+            let generator = UIImpactFeedbackGenerator(style: .medium)
+            generator.impactOccurred()
+            AudioServicesPlaySystemSound(1519) // Peek feedback
+        } else {
+            // Тяжелая вибрация для нижней кнопки
+            let generator = UIImpactFeedbackGenerator(style: .heavy)
+            generator.impactOccurred()
+            AudioServicesPlaySystemSound(1520) // Pop feedback
+        }
+    }
 
     // Helper функции для кнопки
     private func getButtonText() -> String {
@@ -48,104 +65,74 @@ struct ContentView: View {
     }
 
     var body: some View {
-        VStack(spacing: 30) {
-            // Apple Music status indicator (top right corner)
-            HStack {
-                Spacer()
-                if musicKitManager.isAuthorized {
-                    Text("✅ Apple Music")
-                        .font(.system(size: 14))
-                        .foregroundColor(.green)
-                        .padding(.horizontal, 15)
-                        .padding(.vertical, 8)
-                } else {
-                    Text("⚠️ Нужен Apple Music")
-                        .font(.system(size: 14))
-                        .foregroundColor(.orange)
-                        .padding(.horizontal, 15)
-                        .padding(.vertical, 8)
-                }
-            }
-            .padding(.horizontal)
+        GeometryReader { geometry in
+            VStack(spacing: 0) {
+                // ВЕРХНЯЯ ПОЛОВИНА ЭКРАНА - СЛЕДУЮЩАЯ ПЕСНЯ
+                Button(action: {
+                    playTapSound(high: true)
+                    audioManager.nextTrack()
+                }) {
+                    ZStack {
+                        Color.blue
+                        VStack(spacing: 10) {
+                            Text("⏭️")
+                                .font(.system(size: 80))
+                            Text("СЛЕДУЮЩАЯ")
+                                .font(.system(size: 40, weight: .bold))
+                                .foregroundColor(.white)
 
-            Text(audioManager.statusText)
-                .font(.title).bold()
-                .padding()
-
-            if !audioManager.recognizedText.isEmpty {
-                Text("👂 \(audioManager.recognizedText)")
-                    .foregroundColor(.gray)
-                    .padding()
-                    .multilineTextAlignment(.center)
-            }
-
-            if !audioManager.responseText.isEmpty {
-                Text("💬 \(audioManager.responseText)")
-                    .padding()
-                    .multilineTextAlignment(.center)
-            }
-
-            Spacer()
-
-            // Кнопка управления
-            Button(action: {
-                if audioManager.isAutoMode {
-                    // В авто режиме: ПРЕРВАТЬ всё
-                    audioManager.interrupt()
-                } else {
-                    // В ручном режиме: старт/стоп
-                    if audioManager.isListening {
-                        audioManager.stopListening()
-                    } else if !audioManager.isProcessing {
-                        audioManager.startListening()
+                            // Отладочная информация (мелко)
+                            VStack(spacing: 5) {
+                                if musicKitManager.isAuthorized {
+                                    Text("✅ Apple Music")
+                                        .font(.system(size: 10))
+                                        .foregroundColor(.white.opacity(0.7))
+                                }
+                                Text(audioManager.statusText)
+                                    .font(.system(size: 10))
+                                    .foregroundColor(.white.opacity(0.7))
+                                if !audioManager.recognizedText.isEmpty {
+                                    Text("👂 \(audioManager.recognizedText)")
+                                        .font(.system(size: 8))
+                                        .foregroundColor(.white.opacity(0.6))
+                                        .lineLimit(1)
+                                }
+                            }
+                            .padding(.top, 10)
+                        }
                     }
                 }
-            }) {
-                Text(getButtonText())
-                    .font(.system(size: 32, weight: .bold))
-                    .foregroundColor(.white)
-                    .frame(width: 320, height: 120)
-                    .background(getButtonColor())
-                    .cornerRadius(20)
-            }
-            .padding(.bottom, 20)
+                .frame(height: geometry.size.height / 2)
 
-            // Маленькие кнопки управления
-            HStack(spacing: 15) {
-                // Кнопка переключения режима
+                // НИЖНЯЯ ПОЛОВИНА ЭКРАНА - СТОП И СЛУШАЮ
                 Button(action: {
-                    audioManager.isAutoMode.toggle()
-                    if audioManager.isAutoMode {
-                        audioManager.startListeningAuto()
-                    } else {
-                        audioManager.interrupt()
+                    playTapSound(high: false)
+                    audioManager.stopAndListen()
+                }) {
+                    ZStack {
+                        Color.red
+                        VStack(spacing: 10) {
+                            Text("🛑")
+                                .font(.system(size: 80))
+                            Text("СТОП → СЛУШАЮ")
+                                .font(.system(size: 40, weight: .bold))
+                                .foregroundColor(.white)
+
+                            // Отладочная информация (мелко)
+                            if !audioManager.responseText.isEmpty {
+                                Text("💬 \(audioManager.responseText)")
+                                    .font(.system(size: 8))
+                                    .foregroundColor(.white.opacity(0.6))
+                                    .lineLimit(2)
+                                    .padding(.top, 10)
+                            }
+                        }
                     }
-                }) {
-                    Text(audioManager.isAutoMode ? "🤖 Авто" : "✋ Ручной")
-                        .font(.system(size: 16))
-                        .foregroundColor(.white)
-                        .padding(.horizontal, 20)
-                        .padding(.vertical, 10)
-                        .background(Color.orange)
-                        .cornerRadius(10)
                 }
-
-                // Кнопка очистки истории
-                Button(action: {
-                    audioManager.clearHistory()
-                }) {
-                    Text("🗑️ Новый разговор")
-                        .font(.system(size: 16))
-                        .foregroundColor(.white)
-                        .padding(.horizontal, 20)
-                        .padding(.vertical, 10)
-                        .background(Color.purple)
-                        .cornerRadius(10)
-                }
+                .frame(height: geometry.size.height / 2)
             }
-            .padding(.bottom, 30)
+            .edgesIgnoringSafeArea(.all)
         }
-        .padding()
         .onAppear {
             // КРИТИЧЕСКИ ВАЖНО: устанавливаем musicKitManager ПЕРЕД любыми действиями
             audioManager.musicKitManager = musicKitManager
@@ -203,6 +190,38 @@ final class AudioManager: NSObject, ObservableObject {
 
     // Флаг для отслеживания музыкальных команд
     private var lastCommandWasMusic = false
+
+    // MARK: - Initialization
+    override init() {
+        super.init()
+
+        // Подписываемся на уведомление о блокировке экрана
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleScreenLock),
+            name: UIApplication.willResignActiveNotification,
+            object: nil
+        )
+
+        print("✅ AudioManager initialized, screen lock observer added")
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+
+    @objc private func handleScreenLock() {
+        print("🔒 Screen locked - stopping music")
+        musicKitManager?.stop()
+        // Также останавливаем речь и запись если есть
+        player?.stop()
+        isSpeaking = false
+        if isListening {
+            audioEngine?.stop()
+            audioEngine?.inputNode.removeTap(onBus: 0)
+            isListening = false
+        }
+    }
 
     // MARK: Приветствие
     func sayGreeting() {
@@ -516,6 +535,38 @@ final class AudioManager: NSObject, ObservableObject {
             } else if !self.isListening && !self.isProcessing {
                 self.statusText = "💤 Жду команды"
             }
+        }
+    }
+
+    // MARK: - Big Button Actions
+
+    /// Следующая песня (верхняя кнопка)
+    func nextTrack() {
+        print("⏭️ Next track button pressed")
+
+        // Остановить только воспроизведение речи (но НЕ музыку!)
+        player?.stop()
+        isSpeaking = false
+
+        musicKitManager?.next { [weak self] songName in
+            guard let self = self else { return }
+
+            // Проговорить название песни
+            print("🔊 Announcing: \(songName)")
+            self.say(songName)
+        }
+    }
+
+    /// Остановить всё и начать слушать (нижняя кнопка)
+    func stopAndListen() {
+        print("🛑 Stop and listen button pressed")
+
+        // Останавливаем всё
+        interrupt()
+
+        // Начинаем слушать
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            self.startListeningAuto()
         }
     }
 
@@ -1096,11 +1147,11 @@ final class AudioManager: NSObject, ObservableObject {
         print("🔊 Starting playback...")
 
         do {
-            // Для TTS используем .playback чтобы звук был громким
-            // Переключаемся на режим воспроизведения, временно останавливая другие приложения
-            try AVAudioSession.sharedInstance().setCategory(.playback, mode: .spokenAudio, options: [])
+            // Для TTS используем .playback с .mixWithOthers чтобы не останавливать музыку
+            // Также используем .duckOthers чтобы музыка стала тише во время речи
+            try AVAudioSession.sharedInstance().setCategory(.playback, mode: .spokenAudio, options: [.mixWithOthers, .duckOthers])
             try AVAudioSession.sharedInstance().setActive(true, options: .notifyOthersOnDeactivation)
-            print("✅ Audio session configured for TTS playback")
+            print("✅ Audio session configured for TTS playback (mixing with music)")
 
             isSpeaking = true
             let p = try AVAudioPlayer(contentsOf: url)

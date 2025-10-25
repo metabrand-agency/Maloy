@@ -16,6 +16,8 @@ class MusicKitManager: ObservableObject {
     @Published var currentSong: String?
 
     private let player = ApplicationMusicPlayer.shared
+    private var currentPlaylist: [Song] = []
+    private var currentTrackIndex: Int = 0
 
     init() {
         // Check authorization status on init
@@ -53,20 +55,36 @@ class MusicKitManager: ObservableObject {
 
     // MARK: - Search and Playback
 
-    /// Search for a song and play it
-    func searchAndPlay(query: String, completion: @escaping (Bool, String) -> Void) {
-        print("🎵 searchAndPlay called with query: \"\(query)\"")
-        print("🎵 isAuthorized: \(isAuthorized)")
-
-        guard isAuthorized else {
-            print("❌ MusicKit not authorized!")
-            completion(false, "Нужен доступ к Apple Music. Проверь настройки.")
-            return
+    /// Helper: Create playlist from songs collection
+    private func createPlaylist(from songs: MusicItemCollection<Song>, maxSize: Int) -> [Song] {
+        let size = min(maxSize, songs.count)
+        var result: [Song] = []
+        result.reserveCapacity(size)
+        var idx = 0
+        for song in songs {
+            if idx >= size { break }
+            result.append(song)
+            idx += 1
         }
+        return result
+    }
 
-        print("🔍 Searching Apple Music: \"\(query)\"")
+    /// Helper: Create playlist from array of songs
+    private func createPlaylistFromArray(from songs: [Song], maxSize: Int) -> [Song] {
+        let size = min(maxSize, songs.count)
+        var result: [Song] = []
+        result.reserveCapacity(size)
+        var idx = 0
+        for song in songs {
+            if idx >= size { break }
+            result.append(song)
+            idx += 1
+        }
+        return result
+    }
 
-        Task {
+    /// Async helper for searchAndPlay
+    private func performSearch(query: String, completion: @escaping (Bool, String) -> Void) async {
             do {
                 // Check subscription status
                 let subscription = try await MusicSubscription.current
@@ -85,26 +103,36 @@ class MusicKitManager: ObservableObject {
                 // Try CATALOG search first (requires Developer Token)
                 print("🔍 Trying CATALOG search...")
                 var catalogRequest = MusicCatalogSearchRequest(term: query, types: [Song.self])
-                catalogRequest.limit = 10
+                catalogRequest.limit = 20  // Get more songs for variety
 
                 do {
                     let catalogResponse = try await catalogRequest.response()
                     let count = catalogResponse.songs.count
                     print("✅ CATALOG search succeeded! Songs count: \(count)")
 
-                    guard let song = catalogResponse.songs.first else {
+                    guard count > 0 else {
                         await MainActor.run {
                             completion(false, "Не нашёл '\(query)' в Apple Music")
                         }
                         return
                     }
 
-                    let songTitle = song.title
-                    let artistName = song.artistName
-                    print("✅ Found: \(songTitle) - \(artistName)")
+                    // Create playlist using helper function
+                    let playlistSongs = self.createPlaylist(from: catalogResponse.songs, maxSize: 10)
 
-                    // Set player queue and play
-                    player.queue = [song]
+                    // Save playlist for track navigation
+                    self.currentPlaylist = playlistSongs
+                    self.currentTrackIndex = 0
+
+                    let firstSong = playlistSongs[0]
+                    let songTitle = firstSong.title
+                    let artistName = firstSong.artistName
+                    print("✅ Found: \(songTitle) - \(artistName)")
+                    print("🎵 Creating playlist with \(playlistSongs.count) songs")
+
+                    // Set player queue with multiple songs and play
+                    let queueToSet: ApplicationMusicPlayer.Queue = ApplicationMusicPlayer.Queue(for: playlistSongs)
+                    player.queue = queueToSet
                     try await player.play()
 
                     await MainActor.run {
@@ -137,19 +165,29 @@ class MusicKitManager: ObservableObject {
 
                 print("✅ Found \(matchingSongs.count) matching songs in library")
 
-                guard let song = matchingSongs.first else {
+                guard matchingSongs.count > 0 else {
                     await MainActor.run {
                         completion(false, "Не нашёл '\(query)' ни в каталоге, ни в твоей библиотеке")
                     }
                     return
                 }
 
-                let songTitle = song.title
-                let artistName = song.artistName
-                print("✅ Found in library: \(songTitle) - \(artistName)")
+                // Create playlist using helper function
+                let playlistSongs = self.createPlaylistFromArray(from: matchingSongs, maxSize: 10)
 
-                // Set player queue and play
-                player.queue = [song]
+                // Save playlist for track navigation
+                self.currentPlaylist = playlistSongs
+                self.currentTrackIndex = 0
+
+                let firstSong = playlistSongs[0]
+                let songTitle = firstSong.title
+                let artistName = firstSong.artistName
+                print("✅ Found in library: \(songTitle) - \(artistName)")
+                print("🎵 Creating playlist with \(playlistSongs.count) songs")
+
+                // Set player queue with multiple songs and play
+                let queueToSet: ApplicationMusicPlayer.Queue = ApplicationMusicPlayer.Queue(for: playlistSongs)
+                player.queue = queueToSet
                 try await player.play()
 
                 await MainActor.run {
@@ -165,6 +203,23 @@ class MusicKitManager: ObservableObject {
                     completion(false, "Ошибка поиска музыки: \(error.localizedDescription)")
                 }
             }
+    }
+
+    /// Search for a song and play it
+    func searchAndPlay(query: String, completion: @escaping (Bool, String) -> Void) {
+        print("🎵 searchAndPlay called with query: \"\(query)\"")
+        print("🎵 isAuthorized: \(isAuthorized)")
+
+        guard isAuthorized else {
+            print("❌ MusicKit not authorized!")
+            completion(false, "Нужен доступ к Apple Music. Проверь настройки.")
+            return
+        }
+
+        print("🔍 Searching Apple Music: \"\(query)\"")
+
+        Task {
+            await performSearch(query: query, completion: completion)
         }
     }
 
@@ -187,13 +242,66 @@ class MusicKitManager: ObservableObject {
     }
 
     /// Skip to next track
-    func next() {
+    func next(completion: ((String) -> Void)? = nil) {
         Task {
+            print("⏭️ Next track button pressed")
+
+            // Increment track index
+            currentTrackIndex += 1
+
+            // Check if we have the next song in our saved playlist
+            guard currentTrackIndex < currentPlaylist.count else {
+                print("⚠️ No more tracks in playlist")
+                await MainActor.run {
+                    completion?("Конец плейлиста")
+                }
+                return
+            }
+
+            let nextSong = currentPlaylist[currentTrackIndex]
+            let announcement = "\(nextSong.title) — \(nextSong.artistName)"
+            print("🎵 Next track: \(announcement)")
+
+            // Use simple approach: stop and recreate queue from current position
+            print("🔄 Recreating queue from position \(currentTrackIndex)")
+
+            let remainingSongs = Array(currentPlaylist[currentTrackIndex...])
+            print("📝 Remaining songs in queue: \(remainingSongs.count)")
+
             do {
-                try await player.skipToNextEntry()
-                print("⏭️ Skipped to next track")
+                // Stop current playback
+                player.stop()
+                print("⏹️ Stopped current playback")
+
+                // Small delay to ensure clean state
+                try await Task.sleep(nanoseconds: 100_000_000) // 0.1 second
+
+                // Create new queue starting from next song
+                let newQueue: ApplicationMusicPlayer.Queue = ApplicationMusicPlayer.Queue(for: remainingSongs)
+                player.queue = newQueue
+                print("📝 New queue set with \(remainingSongs.count) songs")
+
+                // Start playing
+                try await player.play()
+                print("▶️ Started playing")
+
+                // Update current song info
+                await MainActor.run {
+                    self.currentSong = announcement
+                }
+
+                // Wait 1.5 seconds for the song to start playing properly
+                try await Task.sleep(nanoseconds: 1_500_000_000) // 1.5 seconds
+
+                // Now announce the song name (this will duck the music volume)
+                await MainActor.run {
+                    completion?(announcement)
+                }
             } catch {
-                print("❌ Skip next error: \(error)")
+                print("❌ Failed to switch track: \(error)")
+                await MainActor.run {
+                    completion?("Не удалось переключить")
+                }
             }
         }
     }
