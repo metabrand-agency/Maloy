@@ -137,6 +137,9 @@ struct ContentView: View {
             // КРИТИЧЕСКИ ВАЖНО: устанавливаем musicKitManager ПЕРЕД любыми действиями
             audioManager.musicKitManager = musicKitManager
 
+            // Initialize textbook manager
+            audioManager.textbookManager = TextbookManager(apiKey: Config.openAIKey)
+
             // Ждем пока MusicKit authorization завершится (может быть асинхронной)
             // Проверяем каждые 0.2 секунды, максимум 10 попыток (2 секунды)
             var attempts = 0
@@ -171,6 +174,9 @@ final class AudioManager: NSObject, ObservableObject {
 
     // MusicKit manager (passed from ContentView)
     var musicKitManager: MusicKitManager?
+
+    // Textbook manager for reading PDFs
+    var textbookManager: TextbookManager?
 
     private let audioFilename = FileManager.default.temporaryDirectory.appendingPathComponent("input.wav")
     private var audioEngine: AVAudioEngine?
@@ -866,6 +872,32 @@ final class AudioManager: NSObject, ObservableObject {
                         "description": "Вернуться к предыдущему треку",
                         "parameters": ["type": "object", "properties": [:]]
                     ]
+                ],
+                [
+                    "type": "function",
+                    "function": [
+                        "name": "textbook_read",
+                        "description": "Прочитать страницы из учебника. Используй когда пользователь просит прочитать параграф, главу, страницу или решить задачу из учебника. Например: 'прочитай параграф 8 по физике', 'реши номер 238 по алгебре', 'что на странице 45 учебника истории'",
+                        "parameters": [
+                            "type": "object",
+                            "properties": [
+                                "subject": [
+                                    "type": "string",
+                                    "description": "Предмет (физика, алгебра, геометрия, история, биология, химия и т.д.)"
+                                ],
+                                "pages": [
+                                    "type": "array",
+                                    "items": ["type": "integer"],
+                                    "description": "Номера страниц для чтения (например [45, 46, 47])"
+                                ],
+                                "instruction": [
+                                    "type": "string",
+                                    "description": "Инструкция что сделать (прочитать текст, решить задачу, объяснить и т.д.)"
+                                ]
+                            ],
+                            "required": ["subject", "pages"]
+                        ]
+                    ]
                 ]
             ]
         }
@@ -1067,6 +1099,37 @@ final class AudioManager: NSObject, ObservableObject {
         case "music_previous":
             music.previous()
             completion("{\"success\": true, \"message\": \"Предыдущий трек\"}")
+
+        case "textbook_read":
+            guard let textbooks = textbookManager else {
+                completion("{\"error\": \"Textbook manager not initialized\"}")
+                return
+            }
+
+            guard let subject = args["subject"] as? String,
+                  let pages = args["pages"] as? [Int] else {
+                completion("{\"error\": \"Missing subject or pages parameters\"}")
+                return
+            }
+
+            let instruction = args["instruction"] as? String ?? "Read all text on these pages, including formulas and diagrams. Explain in simple Russian language suitable for an 8th grader."
+
+            // Find textbook by subject
+            guard let textbookName = textbooks.findTextbook(subject: subject) else {
+                completion("{\"error\": \"Textbook not found for subject: \(subject). Available textbooks: \(textbooks.listTextbooks().joined(separator: ", "))\"}")
+                return
+            }
+
+            print("📚 Reading pages \(pages) from \(textbookName)")
+
+            // Read pages with Vision API
+            textbooks.readPages(textbookName: textbookName, pages: pages, instruction: instruction) { success, text in
+                if success {
+                    completion("{\"success\": true, \"text\": \"\(text.replacingOccurrences(of: "\"", with: "\\\""))\"}")
+                } else {
+                    completion("{\"success\": false, \"message\": \"\(text)\"}")
+                }
+            }
 
         default:
             completion("{\"error\": \"Unknown function: \(name)\"}")
