@@ -876,6 +876,14 @@ final class AudioManager: NSObject, ObservableObject {
                 [
                     "type": "function",
                     "function": [
+                        "name": "list_textbooks",
+                        "description": "Показать список всех доступных учебников в iCloud",
+                        "parameters": ["type": "object", "properties": [:]]
+                    ]
+                ],
+                [
+                    "type": "function",
+                    "function": [
                         "name": "textbook_read",
                         "description": "Прочитать страницы из учебника. Используй когда пользователь просит прочитать параграф, главу, страницу или решить задачу из учебника. Например: 'прочитай параграф 8 по физике', 'реши номер 238 по алгебре', 'что на странице 45 учебника истории'",
                         "parameters": [
@@ -1099,6 +1107,24 @@ final class AudioManager: NSObject, ObservableObject {
         case "music_previous":
             music.previous()
             completion("{\"success\": true, \"message\": \"Предыдущий трек\"}")
+
+        case "list_textbooks":
+            guard let textbooks = textbookManager else {
+                completion("{\"error\": \"Textbook manager not initialized\"}")
+                return
+            }
+
+            // Get debug info
+            let debugInfo = textbooks.getDebugInfo()
+            let list = textbooks.listTextbooks()
+
+            // Return detailed response with debug info
+            if list.isEmpty {
+                completion("{\"success\": false, \"message\": \"Нет учебников. \(debugInfo)\"}")
+            } else {
+                let listString = list.joined(separator: ", ")
+                completion("{\"success\": true, \"message\": \"Нашёл учебники: \(listString). \(debugInfo)\"}")
+            }
 
         case "textbook_read":
             guard let textbooks = textbookManager else {

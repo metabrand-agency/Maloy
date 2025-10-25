@@ -1,0 +1,29 @@
+{
+  "textbooks": [
+    {
+      "name": "Физика 8 класс",
+      "url": "https://www.dropbox.com/scl/fi/naf0ab8nfe600tmjax53m/8.pdf?rlkey=jo9csynj3fjtrehypn7ch6ond&dl=1",
+      "subject": "физика",
+      "grade": 8
+    },
+    {
+      "name": "Алгебра 8 класс",
+      "url": "https://www.dropbox.com/scl/fi/lo0xmo83hj221k03co460/8.pdf?rlkey=r2dralul78x566s0bqse6kaky&dl=1",
+      "subject": "алгебра",
+      "grade": 8
+    },
+    {
+      "name": "Химия 8 класс",
+      "url": "https://www.dropbox.com/scl/fi/mi4w8jz6c4537fabzdg5n/8.pdf?rlkey=ih5krtmjmhk8086phb9xlaz3m&dl=1",
+      "subject": "химия",
+      "grade": 8
+    },
+    {
+      "name": "Теория вероятности 8 класс",
+      "url": "https://www.dropbox.com/scl/fi/aqakummvycdswqbwe8znf/8.pdf?rlkey=c7s5p9ce63phgv7ewzx17bkku&dl=1",
+      "subject": "вероятность",
+      "grade": 8
+    }
+  ],
+  "version": "1.0"
+}
